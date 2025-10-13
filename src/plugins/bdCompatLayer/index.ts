@@ -735,6 +735,6 @@ const thePlugin = {
 };
 
 export default definePlugin({
-    name: "BD Compatibility Layer",
-    ...thePlugin
+    ...thePlugin,
+    name: "BD Compatibility Layer"
 } as PluginDef);
