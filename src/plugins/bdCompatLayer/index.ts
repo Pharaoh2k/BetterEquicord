@@ -734,7 +734,78 @@ const thePlugin = {
     },
 };
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+const { name: _unusedName, ...thePluginWithoutName } = thePlugin;
+
 export default definePlugin({
     name: "BD Compatibility Layer",
-    ...thePlugin
+    ...thePluginWithoutName
 } as PluginDef);
