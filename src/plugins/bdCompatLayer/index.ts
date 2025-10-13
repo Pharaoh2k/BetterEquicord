@@ -52,7 +52,7 @@ declare global {
     }
 }
 
-import { ZENFS_BUILD_HASH } from "./constants";
+import { Devs, ZENFS_BUILD_HASH } from "./constants";
 import { cleanupGlobal, createGlobalBdApi, getGlobalApi } from "./fakeBdApi";
 import { addContextMenu, addDiscordModules, FakeEventEmitter, fetchWithCorsProxyFallback, Patcher } from "./fakeStuff";
 import { injectSettingsTabs, unInjectSettingsTab } from "./fileSystemViewer";
@@ -71,9 +71,9 @@ export default definePlugin({
     name: "BD Compatibility Layer",
     description: "Converts BD plugins to run in Vencord",
     authors: [
-        { name: "Davvy", id: BigInt("568109529884000260") },
-        { name: "WhoIsThis", id: BigInt("917630027477159986") },
-        { name: "Pharaoh2k", id: BigInt("874825550408089610") }
+        Devs.Davvy,
+        Devs.WhoIsThis,
+        Devs.Pharaoh2k
     ],
     options: {
         enableExperimentalRequestPolyfills: {
