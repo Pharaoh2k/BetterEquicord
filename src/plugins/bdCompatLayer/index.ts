@@ -28,18 +28,32 @@
  * - Replaced FSUtils.mkdirSyncRecursive with native fs.mkdirSync recursive option
  * - Modified authors field to use direct object notation instead of Devs constants
  * - Commented code cleanup
+ * - Fixed plugin definition to use literal string name for build compatibility
+ * - Moved plugin state to external object to resolve TypeScript errors
 */
 
 "use strict";
 /* eslint-disable eqeqeq */
 import { Settings } from "@api/Settings";
 import { copyToClipboard } from "@utils/clipboard";
-import definePlugin, { OptionType, PluginDef } from "@utils/types";
+import definePlugin, { OptionType } from "@utils/types";
 import { React } from "@webpack/common";
 
 import { PluginMeta } from "~plugins";
 
-import { PLUGIN_NAME, ZENFS_BUILD_HASH } from "./constants";
+declare global {
+    interface Window {
+        BdCompatLayer?: any;
+        BdApi?: any;
+        GeneratedPlugins: any[];
+        BrowserFS?: any;
+        ZenFS_Aquire?: () => any;
+        zip?: any;
+        require?: any;
+    }
+}
+
+import { ZENFS_BUILD_HASH } from "./constants";
 import { cleanupGlobal, createGlobalBdApi, getGlobalApi } from "./fakeBdApi";
 import { addContextMenu, addDiscordModules, FakeEventEmitter, fetchWithCorsProxyFallback, Patcher } from "./fakeStuff";
 import { injectSettingsTabs, unInjectSettingsTab } from "./fileSystemViewer";
@@ -47,8 +61,15 @@ import { addCustomPlugin, convertPlugin, removeAllCustomPlugins } from "./plugin
 import { ReactUtils_filler } from "./stuffFromBD";
 import { aquireNative, compat_logger, FSUtils, getDeferred, reloadCompatLayer, simpleGET, ZIPUtils } from "./utils";
 
-const thePlugin = {
-    name: PLUGIN_NAME,
+// Store state outside the plugin definition since PluginDef doesn't allow custom properties
+const pluginState = {
+    originalBuffer: {} as BufferConstructor,
+    globalWasNotExisting: false,
+    globalDefineWasNotExisting: false
+};
+
+export default definePlugin({
+    name: "BD Compatibility Layer",
     description: "Converts BD plugins to run in Vencord",
     authors: [
         { name: "Davvy", id: 568109529884000260n },
@@ -119,9 +140,6 @@ const thePlugin = {
             }
         }
     },
-    originalBuffer: {},
-    globalWasNotExisting: false,
-    globalDefineWasNotExisting: false,
     start() {
         injectSettingsTabs();
         const reimplementationsReady = getDeferred<void>();
@@ -143,7 +161,7 @@ const thePlugin = {
                 // - Prefer local bundling of @noble/hashes over runtime CDN imports.
                 //   Third-party CDNs require explicit CSP allowances and have integrity trade-offs.
                 //   If a CDN is unavoidable, pin exact versions and document CSP/import-map settings.
-                // - Hashing uses @noble/hashes (audited, 0-dep, streaming API). It’s fast in practice;
+                // - Hashing uses @noble/hashes (audited, 0-dep, streaming API). It's fast in practice;
                 //   actual bundle size depends on imported algorithms (e.g., sha256 ~5–6 KB unminified).
                 // - randomBytes() is backed by window.crypto.getRandomValues() (web CSPRNG).
                 //
@@ -153,7 +171,7 @@ const thePlugin = {
                 // - Legacy hashes (md5/sha1) are provided only for compatibility checksums.
                 //
                 // Why not Web Crypto here?
-                // - We keep a synchronous Node-like surface for createHash(). Web Crypto’s digest()
+                // - We keep a synchronous Node-like surface for createHash(). Web Crypto's digest()
                 //   is async (Promise), which can break plugins expecting sync availability.
                 //
                 // References: MDN getRandomValues(), SubtleCrypto digest(), MDN non-security hashing guidance.
@@ -177,11 +195,12 @@ const thePlugin = {
             }
         })();
 
-        const proxyUrl = Settings.plugins[this.name].corsProxyUrl ?? this.options.corsProxyUrl.default;
+        const proxyUrl = Settings.plugins["BD Compatibility Layer"]?.corsProxyUrl ?? "https://cors-get-proxy.sirjosh.workers.dev/?url=";
 
         // eslint-disable-next-line no-prototype-builtins
-        if (!Settings.plugins[this.name].hasOwnProperty("pluginsStatus")) {
-            Settings.plugins[this.name].pluginsStatus = this.options.pluginsStatus.default;
+        if (!Settings.plugins["BD Compatibility Layer"]?.hasOwnProperty("pluginsStatus")) {
+            Settings.plugins["BD Compatibility Layer"] = Settings.plugins["BD Compatibility Layer"] || {};
+            Settings.plugins["BD Compatibility Layer"].pluginsStatus = {};
         }
 
         const reallyUsePoorlyMadeRealFs = false;
@@ -205,14 +224,14 @@ const thePlugin = {
                         browserFSSetting: {},
                         client: null as typeof zen.RealFSClient | null,
                     };
-                    if (Settings.plugins[this.name].useRealFsInstead === true) {
+                    if (Settings.plugins["BD Compatibility Layer"]?.useRealFsInstead === true) {
                         target.client = new zen.RealFSClient("localhost:8000/api/v1/ws"); // TODO: add option to change this
                         target.browserFSSetting = {
                             backend: zen.RealFs,
                             sync: ZenFs.InMemory,
                             client: target.client,
                         };
-                    } else if (Settings.plugins[this.name].useIndexedDBInstead === true) {
+                    } else if (Settings.plugins["BD Compatibility Layer"]?.useIndexedDBInstead === true) {
                         target.browserFSSetting = {
                             backend: ZenFsDom.IndexedDB,
                             storeName: "VirtualFS",
@@ -232,7 +251,7 @@ const thePlugin = {
                             const path = await (await fetch("https://cdn.jsdelivr.net/npm/path-browserify@1.0.1/index.js")).text();
                             const result = eval.call(window, "(()=>{const module = {};" + path + "return module.exports;})();\n//# sourceURL=betterDiscord://internal/path.js");
                             ReImplementationObject.path = result;
-                            if (Settings.plugins[this.name].safeMode == undefined || Settings.plugins[this.name].safeMode == false)
+                            if (Settings.plugins["BD Compatibility Layer"]?.safeMode == undefined || Settings.plugins["BD Compatibility Layer"]?.safeMode == false)
                                 // @ts-ignore
                                 windowBdCompatLayer.fsReadyPromise.resolve();
                         }
@@ -249,7 +268,7 @@ const thePlugin = {
                 ReImplementationObject.fs = await req("fs");
                 ReImplementationObject.path = await req("path");
                 ReImplementationObject.process.env._home_secret = (await native.getUserHome())!;
-                if (Settings.plugins[this.name].safeMode == undefined || Settings.plugins[this.name].safeMode == false)
+                if (Settings.plugins["BD Compatibility Layer"]?.safeMode == undefined || Settings.plugins["BD Compatibility Layer"]?.safeMode == false)
                     // @ts-ignore
                     windowBdCompatLayer.fsReadyPromise.resolve();
             });
@@ -320,7 +339,7 @@ const thePlugin = {
                     return ev2;
                 },
                 get get() {
-                    if (Settings.plugins[thePlugin.name].enableExperimentalRequestPolyfills === true)
+                    if (Settings.plugins["BD Compatibility Layer"]?.enableExperimentalRequestPolyfills === true)
                         return this.get_;
                     return undefined;
                 }
@@ -352,7 +371,7 @@ const thePlugin = {
                 return fakeRequest;
             },
             get request() {
-                if (Settings.plugins[thePlugin.name].enableExperimentalRequestPolyfills === true)
+                if (Settings.plugins["BD Compatibility Layer"]?.enableExperimentalRequestPolyfills === true)
                     return this.request_;
                 return undefined;
             },
@@ -470,7 +489,7 @@ const thePlugin = {
         };
         const BdApiReImplementation = createGlobalBdApi();
         window.BdApi = BdApiReImplementation;
-        if (PluginMeta[PLUGIN_NAME].userPlugin === true) {
+        if (PluginMeta["BD Compatibility Layer"].userPlugin === true) {
             BdApiReImplementation.UI.showConfirmationModal("Error", "BD Compatibility Layer will not work as a user plugin!", { cancelText: null, onCancel: null });
             compat_logger.warn("Removing settings tab...");
             unInjectSettingsTab();
@@ -483,13 +502,13 @@ const thePlugin = {
         }
         // @ts-ignore
         window.require = FakeRequireRedirect;
-        this.originalBuffer = window.Buffer;
+        pluginState.originalBuffer = window.Buffer;
         window.Buffer = BdApiReImplementation.Webpack.getModule(x => x.INSPECT_MAX_BYTES)?.Buffer;
         if (typeof window.global === "undefined") {
-            this.globalWasNotExisting = true;
-            this.globalDefineWasNotExisting = true;
+            pluginState.globalWasNotExisting = true;
+            pluginState.globalDefineWasNotExisting = true;
         } else if (typeof window.global.define === "undefined") {
-            this.globalDefineWasNotExisting = true;
+            pluginState.globalDefineWasNotExisting = true;
         }
         window.global = window.global || globalThis;
         window.global.define = window.global.define || function () { };
@@ -581,9 +600,9 @@ const thePlugin = {
             localFs.mkdirSync(BdApiReImplementation.Plugins.folder, { recursive: true });
             for (const key in this.options) {
                 if (Object.hasOwnProperty.call(this.options, key)) {
-                    if (Settings.plugins[this.name][key] && key.startsWith("pluginUrl")) {
+                    if (Settings.plugins["BD Compatibility Layer"]?.[key] && key.startsWith("pluginUrl")) {
                         try {
-                            const url = Settings.plugins[this.name][key];
+                            const url = Settings.plugins["BD Compatibility Layer"][key];
                             const response = simpleGET(proxyUrl + url);
                             const filenameFromUrl = response.responseURL
                                 .split("/")
@@ -599,7 +618,7 @@ const thePlugin = {
                             compat_logger.error(
                                 error,
                                 "\nWhile loading: " +
-                                Settings.plugins[this.name][key]
+                                Settings.plugins["BD Compatibility Layer"]?.[key]
                             );
                         }
                     }
@@ -697,9 +716,13 @@ const thePlugin = {
     },
     async stop() {
         compat_logger.warn("Disabling observer...");
-        window.BdCompatLayer.mainObserver.disconnect();
+        if (window.BdCompatLayer?.mainObserver) {
+            window.BdCompatLayer.mainObserver.disconnect();
+        }
         compat_logger.warn("Removing onSwitch listener...");
-        window.BdCompatLayer.Router.listeners.delete(window.BdCompatLayer.mainRouterListener);
+        if (window.BdCompatLayer?.Router?.listeners) {
+            window.BdCompatLayer.Router.listeners.delete(window.BdCompatLayer.mainRouterListener);
+        }
         compat_logger.warn("UnPatching context menu...");
         getGlobalApi().Patcher.unpatchAll("ContextMenuPatcher");
         compat_logger.warn("Removing plugins...");
@@ -709,11 +732,11 @@ const thePlugin = {
         getGlobalApi().DOM.removeStyle("bd-compat-layer-stuff");
         compat_logger.warn("Removing settings tab...");
         unInjectSettingsTab();
-        if (this.globalDefineWasNotExisting === true) {
+        if (pluginState.globalDefineWasNotExisting === true) {
             compat_logger.warn("Removing global.define...");
             delete window.global.define;
         }
-        if (this.globalWasNotExisting === true) {
+        if (pluginState.globalWasNotExisting === true) {
             compat_logger.warn("Removing global...");
             // @ts-ignore
             delete window.global;
@@ -730,14 +753,6 @@ const thePlugin = {
         compat_logger.warn("Removing FileSystem...");
         delete window.BrowserFS;
         compat_logger.warn("Restoring buffer...");
-        window.Buffer = this.originalBuffer as BufferConstructor;
-    },
-};
-
-
-const { name: _unusedName, ...thePluginWithoutName } = thePlugin;
-
-export default definePlugin({
-    name: "BD Compatibility Layer",
-    ...thePluginWithoutName
-} as PluginDef);
+        window.Buffer = pluginState.originalBuffer;
+    }
+});
