@@ -28,7 +28,7 @@ jobs:
 
       - name: Add upstream remote
         run: |
-          git remote add upstream https://github.com/Equicord/Equicord.git || true
+          git remote get-url upstream >/dev/null 2>&1 || git remote add upstream https://github.com/Equicord/Equicord.git
           git remote -v
 
       - name: Fetch upstream

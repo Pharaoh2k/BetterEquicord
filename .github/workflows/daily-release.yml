@@ -49,32 +49,24 @@ jobs:
       - name: Collect files to be released
         run: |
           cd dist
-          mkdir -p release
+          mkdir release
 
-          # Copy browser files
-          cp browser/browser.* release/ || true
+          cp browser/browser.* release
+          cp Vencord.user.{js,js.LEGAL.txt} release
 
-          # Copy userscript files
-          cp Vencord.user.{js,js.LEGAL.txt} release/ || true
+          # copy the plugin data jsons, the extension zips and the desktop/vesktop asars
+          cp *.{json,zip,asar} release
 
-          # Copy plugin data JSONs, extension zips, and desktop/vesktop asars
-          cp *.{json,zip,asar} release/ || true
-
-          # Legacy un-asared files
-          cp desktop/* release/ || true
-          
-          # Copy equibop files
+          # legacy un-asared files
+          cp desktop/* release
           for file in equibop/*; do
-            if [ -f "$file" ]; then
-              filename=$(basename "$file")
-              cp "$file" "release/equibop${filename^}" || true
-            fi
+            filename=$(basename "$file")
+            cp "$file" "release/equibop${filename^}"
           done
 
-          # Cleanup
           find release -size 0 -delete
-          rm -f release/package.json
-          rm -f release/*.map
+          rm release/package.json
+          rm release/*.map
 
       - name: Create or update latest release
         run: |
