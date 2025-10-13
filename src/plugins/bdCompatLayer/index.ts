@@ -34,12 +34,11 @@
 /* eslint-disable eqeqeq */
 import { Settings } from "@api/Settings";
 import { copyToClipboard } from "@utils/clipboard";
-import definePlugin, { OptionType } from "@utils/types";
+import definePlugin, { OptionType, PluginAuthor } from "@utils/types";
 import { React } from "@webpack/common";
 
 import { PluginMeta } from "~plugins";
 
-// Extend window type to include our additions
 declare global {
     interface Window {
         BdCompatLayer?: any;
@@ -52,13 +51,22 @@ declare global {
     }
 }
 
-import { Devs, ZENFS_BUILD_HASH } from "./constants";
+import { ZENFS_BUILD_HASH } from "./constants";
 import { cleanupGlobal, createGlobalBdApi, getGlobalApi } from "./fakeBdApi";
 import { addContextMenu, addDiscordModules, FakeEventEmitter, fetchWithCorsProxyFallback, Patcher } from "./fakeStuff";
 import { injectSettingsTabs, unInjectSettingsTab } from "./fileSystemViewer";
 import { addCustomPlugin, convertPlugin, removeAllCustomPlugins } from "./pluginConstructor";
 import { ReactUtils_filler } from "./stuffFromBD";
 import { aquireNative, compat_logger, FSUtils, getDeferred, reloadCompatLayer, simpleGET, ZIPUtils } from "./utils";
+
+
+type Author = { name: string; id: string | bigint; };
+
+const authors: Author[] = [
+    { name: "Davvy", id: 568109529884000260n },
+    { name: "WhoIsThis", id: 917630027477159986n },
+    { name: "Pharaoh2k", id: 874825550408089610n }
+];
 
 // Store state outside the plugin definition since PluginDef doesn't allow custom properties
 const pluginState = {
@@ -67,14 +75,21 @@ const pluginState = {
     globalDefineWasNotExisting: false
 };
 
+// Helper for build script compatibility
+function toStringIds(authors: Author[]) {
+    if (process.env.GENERATE_PLUGIN_JSON) {
+        return authors.map(a => ({
+            ...a,
+            id: a.id.toString()
+        }));
+    }
+    return authors;
+}
+
 export default definePlugin({
     name: "BD Compatibility Layer",
     description: "Converts BD plugins to run in Vencord",
-    authors: [
-        Devs.Davvy,
-        Devs.WhoIsThis,
-        Devs.Pharaoh2k
-    ],
+    authors: toStringIds(authors) as unknown as PluginAuthor[],
     options: {
         enableExperimentalRequestPolyfills: {
             description: "Enables request polyfills that first try to request using normal fetch, then using a cors proxy when the normal one fails",
