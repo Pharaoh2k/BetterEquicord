@@ -28,8 +28,6 @@
  * - Replaced FSUtils.mkdirSyncRecursive with native fs.mkdirSync recursive option
  * - Modified authors field to use direct object notation instead of Devs constants
  * - Commented code cleanup
- * - Fixed plugin definition to use literal string name for build compatibility
- * - Moved plugin state to external object to resolve TypeScript errors
 */
 
 "use strict";
@@ -41,6 +39,7 @@ import { React } from "@webpack/common";
 
 import { PluginMeta } from "~plugins";
 
+// Extend window type to include our additions
 declare global {
     interface Window {
         BdCompatLayer?: any;
@@ -72,9 +71,9 @@ export default definePlugin({
     name: "BD Compatibility Layer",
     description: "Converts BD plugins to run in Vencord",
     authors: [
-        { name: "Davvy", id: 568109529884000260n },
-        { name: "WhoIsThis", id: 917630027477159986n },
-        { name: "Pharaoh2k", id: 874825550408089610n }
+        { name: "Davvy", id: BigInt("568109529884000260") },
+        { name: "WhoIsThis", id: BigInt("917630027477159986") },
+        { name: "Pharaoh2k", id: BigInt("874825550408089610") }
     ],
     options: {
         enableExperimentalRequestPolyfills: {
@@ -132,7 +131,6 @@ export default definePlugin({
             restartNeeded: true,
         },
         pluginsStatus: {
-            description: "",
             default: {},
             type: OptionType.COMPONENT,
             component() {
