@@ -48,7 +48,7 @@ import { ReactUtils_filler } from "./stuffFromBD";
 import { aquireNative, compat_logger, FSUtils, getDeferred, reloadCompatLayer, simpleGET, ZIPUtils } from "./utils";
 
 const thePlugin = {
-    name: PLUGIN_NAME,
+    name: "BD Compatibility Layer",
     description: "Converts BD plugins to run in Vencord",
     authors: [
         { name: "Davvy", id: 568109529884000260n },
@@ -735,6 +735,5 @@ const thePlugin = {
 };
 
 export default definePlugin({
-    ...thePlugin,
-    name: "BD Compatibility Layer"
+    ...thePlugin
 } as PluginDef);
