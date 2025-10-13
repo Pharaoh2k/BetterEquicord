@@ -1,0 +1,101 @@
+name: Daily Release
+
+on:
+  schedule:
+    # Run daily at 01:00 UTC (after sync workflow)
+    - cron: '0 1 * * *'
+  workflow_dispatch: # Allow manual trigger
+
+env:
+  FORCE_COLOR: true
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build and Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup PNPM
+        uses: pnpm/action-setup@v3
+
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build web
+        run: pnpm buildWebStandalone
+
+      - name: Build
+        run: pnpm buildStandalone
+
+      - name: Generate plugin lists
+        run: |
+          pnpm generatePluginJson dist/plugins.json
+          pnpm generateEquicordPluginJson dist/equicordplugins.json
+          pnpm generateVencordPluginJson dist/vencordplugins.json
+          pnpm generateDevsList dist/devs.json
+
+      - name: Collect files to be released
+        run: |
+          cd dist
+          mkdir -p release
+
+          # Copy browser files
+          cp browser/browser.* release/ || true
+
+          # Copy userscript files
+          cp Vencord.user.{js,js.LEGAL.txt} release/ || true
+
+          # Copy plugin data JSONs, extension zips, and desktop/vesktop asars
+          cp *.{json,zip,asar} release/ || true
+
+          # Legacy un-asared files
+          cp desktop/* release/ || true
+          
+          # Copy equibop files
+          for file in equibop/*; do
+            if [ -f "$file" ]; then
+              filename=$(basename "$file")
+              cp "$file" "release/equibop${filename^}" || true
+            fi
+          done
+
+          # Cleanup
+          find release -size 0 -delete
+          rm -f release/package.json
+          rm -f release/*.map
+
+      - name: Create or update latest release
+        run: |
+          cd dist/release
+          
+          # Check if latest release exists
+          if gh release view latest >/dev/null 2>&1; then
+            echo "Updating existing 'latest' release"
+            gh release upload latest --clobber ./*
+          else
+            echo "Creating new 'latest' release"
+            gh release create latest \
+              --title "Latest Development Build" \
+              --notes "Automated daily build from the latest commit.
+
+          **Note:** This is an automated build and may be unstable.
+          
+          Build Date: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
+          Commit: ${{ github.sha }}" \
+              --prerelease \
+              ./*
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
