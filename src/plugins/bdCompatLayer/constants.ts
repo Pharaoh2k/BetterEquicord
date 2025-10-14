@@ -24,12 +24,17 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
-
+export interface Dev {
+    name: string;
+    id: bigint;
+    badge?: boolean;
+}
 export const PLUGIN_NAME = "BD Compatibility Layer";
 export const BROWSERFS_BUILD_HASH = "1424d8eb5a28610e64fc8bde305eeb0676c9667e";
 export const ZENFS_BUILD_HASH = "87df0ac960e3479912a7823af0ff82ca3a6cce29";
-export const Devs = {
+export const Devs = /* #__PURE__*/ Object.freeze({
     Davvy: { name: "Davvy", id: 568109529884000260n },
     WhoIsThis: { name: "WhoIsThis", id: 917630027477159986n },
-    Pharaoh2k: { name: "Pharaoh2k", id: 874825550408089610n }
-};
+    Pharaoh2k: { name: "Pharaoh2k", id: 874825550408089610n },
+
+} satisfies Record<string, Dev>);
