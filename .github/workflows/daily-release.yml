@@ -20,8 +20,9 @@ jobs:
   build-and-release:
     name: Build and Release
     runs-on: ubuntu-latest
-    # Make the secret available as an env var for step-level "if" checks
+    # Make tokens available to all steps (gh expects GH_TOKEN)
     env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       ETOKEN: ${{ secrets.ETOKEN }}
 
     steps:
@@ -80,8 +81,6 @@ jobs:
           rm -f release/*.map
 
       - name: Create or update 'latest' release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
