@@ -51,7 +51,7 @@ declare global {
     }
 }
 
-import { Devs, ZENFS_BUILD_HASH } from "./constants";
+import { ZENFS_BUILD_HASH } from "./constants";
 import { cleanupGlobal, createGlobalBdApi, getGlobalApi } from "./fakeBdApi";
 import { addContextMenu, addDiscordModules, FakeEventEmitter, fetchWithCorsProxyFallback, Patcher } from "./fakeStuff";
 import { injectSettingsTabs, unInjectSettingsTab } from "./fileSystemViewer";
@@ -70,7 +70,11 @@ const pluginState = {
 export default definePlugin({
     name: "BD Compatibility Layer",
     description: "Converts BD plugins to run in Vencord",
-    authors: [Devs.Davvy, Devs.WhoIsThis, Devs.Pharaoh2k],
+    authors: [
+        { name: "Davvy", id: 568109529884000260n },
+        { name: "WhoIsThis", id: 917630027477159986n },
+        { name: "Pharaoh2k", id: 874825550408089610n }
+    ],
     options: {
         enableExperimentalRequestPolyfills: {
             description: "Enables request polyfills that first try to request using normal fetch, then using a cors proxy when the normal one fails",
