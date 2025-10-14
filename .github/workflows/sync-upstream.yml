@@ -12,7 +12,7 @@ permissions:
 jobs:
   sync:
     name: Sync with Upstream
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
