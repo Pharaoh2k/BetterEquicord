@@ -20,6 +20,9 @@ jobs:
   build-and-release:
     name: Build and Release
     runs-on: ubuntu-latest
+    # Make the secret available as an env var for step-level "if" checks
+    env:
+      ETOKEN: ${{ secrets.ETOKEN }}
 
     steps:
       - uses: actions/checkout@v4
@@ -103,9 +106,8 @@ jobs:
           fi
 
       - name: Push plugin JSONs to Equibored repo (optional)
-        if: "${{ secrets.ETOKEN != '' }}"
+        if: ${{ env.ETOKEN != '' }}
         env:
-          ETOKEN: ${{ secrets.ETOKEN }}
           REPO: Equicord/Equibored
         shell: bash
         run: |
