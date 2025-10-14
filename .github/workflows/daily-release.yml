@@ -1,8 +1,8 @@
-name: Daily Release
+name: Daily Release (Scheduled)
 
 on:
   schedule:
-    # Run daily at 01:00 UTC (after sync workflow)
+    # Run daily at 01:00 UTC
     - cron: '0 1 * * *'
   workflow_dispatch: # Allow manual trigger
 
@@ -12,17 +12,21 @@ env:
 permissions:
   contents: write
 
+concurrency:
+  group: daily-release-latest
+  cancel-in-progress: false
+
 jobs:
   build-and-release:
     name: Build and Release
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Setup PNPM
-        uses: pnpm/action-setup@v3
+      - uses: pnpm/action-setup@v3
 
       - name: Use Node.js 20
         uses: actions/setup-node@v4
@@ -47,35 +51,41 @@ jobs:
           pnpm generateDevsList dist/devs.json
 
       - name: Collect files to be released
+        shell: bash
         run: |
-          cd dist
-          mkdir release
+          set -euo pipefail
+          shopt -s nullglob
 
-          cp browser/browser.* release
-          cp Vencord.user.{js,js.LEGAL.txt} release
+          cd dist
+          mkdir -p release
+
+          cp browser/browser.* release || true
+          cp Vencord.user.{js,js.LEGAL.txt} release || true
 
           # copy the plugin data jsons, the extension zips and the desktop/vesktop asars
-          cp *.{json,zip,asar} release
+          for f in *.{json,zip,asar}; do cp "$f" release/; done || true
 
           # legacy un-asared files
-          cp desktop/* release
+          for f in desktop/*; do [ -f "$f" ] && cp "$f" release/ || true; done
           for file in equibop/*; do
             filename=$(basename "$file")
             cp "$file" "release/equibop${filename^}"
-          done
+          done || true
 
-          find release -size 0 -delete
-          rm release/package.json
-          rm release/*.map
+          find release -type f -size 0 -delete || true
+          rm -f release/package.json
+          rm -f release/*.map
 
-      - name: Create or update latest release
+      - name: Create or update 'latest' release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
         run: |
+          set -euo pipefail
           cd dist/release
-          
-          # Check if 'latest' release exists
+
           if gh release view latest -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "Updating existing 'latest' release"
-            # Ensure it's not a prerelease and mark as latest
             gh release edit latest -R "$GITHUB_REPOSITORY" --prerelease=false --latest
             gh release upload latest --clobber -R "$GITHUB_REPOSITORY" ./*
           else
@@ -84,8 +94,6 @@ jobs:
               --title "Latest Development Build" \
               --notes "Automated daily build from the latest commit.
 
-          This will always be the latest release
-          
           Build Date: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
           Commit: ${{ github.sha }}" \
               -R "$GITHUB_REPOSITORY" \
@@ -93,5 +101,27 @@ jobs:
               --target "$GITHUB_SHA" \
               ./*
           fi
+
+      - name: Push plugin JSONs to Equibored repo (optional)
+        if: "${{ secrets.ETOKEN != '' }}"
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ETOKEN: ${{ secrets.ETOKEN }}
+          REPO: Equicord/Equibored
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config --global user.name "GitHub-Actions"
+          git config --global user.email actions@github.com
+
+          git clone "https://${ETOKEN}@github.com/${REPO}.git" plugins
+          cp dist/release/*plugins.json plugins/ || true
+
+          cd plugins
+          if git status --porcelain | grep -q .; then
+            git add -A
+            git commit -m "Plugins for https://github.com/$GITHUB_REPOSITORY/commit/$GITHUB_SHA"
+            git push
+          else
+            echo "No plugin JSON changes; skipping push."
+          fi
