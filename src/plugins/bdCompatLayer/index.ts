@@ -39,7 +39,6 @@ import { React } from "@webpack/common";
 
 import { PluginMeta } from "~plugins";
 
-// Extend window type to include our additions
 declare global {
     interface Window {
         BdCompatLayer?: any;
@@ -60,6 +59,7 @@ import { addCustomPlugin, convertPlugin, removeAllCustomPlugins } from "./plugin
 import { ReactUtils_filler } from "./stuffFromBD";
 import { aquireNative, compat_logger, FSUtils, getDeferred, reloadCompatLayer, simpleGET, ZIPUtils } from "./utils";
 
+
 // Store state outside the plugin definition since PluginDef doesn't allow custom properties
 const pluginState = {
     originalBuffer: {} as BufferConstructor,
@@ -70,11 +70,7 @@ const pluginState = {
 export default definePlugin({
     name: "BD Compatibility Layer",
     description: "Converts BD plugins to run in Vencord",
-    authors: [
-        Devs.Davvy,
-        Devs.WhoIsThis,
-        Devs.Pharaoh2k
-    ],
+    authors: [Devs.Davvy, Devs.WhoIsThis, Devs.Pharaoh2k],
     options: {
         enableExperimentalRequestPolyfills: {
             description: "Enables request polyfills that first try to request using normal fetch, then using a cors proxy when the normal one fails",
