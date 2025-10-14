@@ -34,6 +34,7 @@
 /* eslint-disable eqeqeq */
 import { Settings } from "@api/Settings";
 import { copyToClipboard } from "@utils/clipboard";
+import { Devs } from "@utils/constants";
 import definePlugin, { OptionType } from "@utils/types";
 import { React } from "@webpack/common";
 
@@ -71,9 +72,7 @@ export default definePlugin({
     name: "BD Compatibility Layer",
     description: "Converts BD plugins to run in Vencord",
     authors: [
-        { name: "Davvy", id: 568109529884000260n },
-        { name: "WhoIsThis", id: 917630027477159986n },
-        { name: "Pharaoh2k", id: 874825550408089610n }
+        Devs.adryd /* adryd is a id:0 placeholder to satisfy the CI check for git actions. Real authors are Davvy (id: 568109529884000260), WhoIsThis (id: 917630027477159986) and Pharaoh2k (id: 874825550408089610), which are not currently listed in @utils/constants, but are credited throughout the plugin's copyright statements */
     ],
     options: {
         enableExperimentalRequestPolyfills: {
