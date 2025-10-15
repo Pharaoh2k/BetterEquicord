@@ -13,7 +13,6 @@ jobs:
   build-and-release:
     runs-on: ubuntu-latest
     env:
-      # gh CLI uses this for auth
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
@@ -22,7 +21,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      # IMPORTANT: set up pnpm BEFORE setup-node when using cache: pnpm
+      # Set up pnpm BEFORE setup-node when using cache: pnpm
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
@@ -39,23 +38,33 @@ jobs:
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
 
-      # Build your standalone bundle (adjust if your build command differs)
-      - name: Build Equicord
+      - name: Build Equicord (standalone)
         run: pnpm buildStandalone
+
+      - name: List build outputs (debug)
+        run: |
+          echo "Top-level dist contents:"
+          ls -la dist || true
+          echo
+          echo "dist/equibop contents (expected):"
+          ls -la dist/equibop || true
+          echo
+          echo "Full tree (depth 2):"
+          find dist -maxdepth 2 -type f -print | sort || true
 
       # Pack the build into equibop.asar with equibop/ at the root
       - name: Pack equibop.asar
         shell: bash
         run: |
           set -euxo pipefail
-          OUT_DIR="dist"
+          OUT_DIR="dist/equibop"
           test -f "$OUT_DIR/main.js" || (echo "main.js not found in $OUT_DIR" && exit 1)
 
           mkdir -p packroot/equibop
           cp -r "$OUT_DIR"/. packroot/equibop/
 
           npx asar pack packroot equibop.asar
-          # sanity check
+          # sanity check (should list equibop/main.js)
           npx asar list equibop.asar | head
 
       # Seed a non-prerelease "latest" if none exists (so next step can clobber)
@@ -64,10 +73,9 @@ jobs:
         run: |
           set -euo pipefail
           if ! gh release view latest >/dev/null 2>&1; then
-            # Use a starter tag; you can change this
             gh release create v0.0.1 --title "v0.0.1" --notes "Initial seed release" --latest
           fi
 
-      # Upload to the latest release (mimics upstream's gh upload latest --clobber)
+      # Upload to the latest release (mirrors upstream's 'gh release upload latest --clobber')
       - name: Upload equibop.asar to latest
         run: gh release upload latest --clobber equibop.asar
