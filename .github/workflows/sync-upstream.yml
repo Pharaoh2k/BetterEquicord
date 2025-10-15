@@ -1,43 +1,49 @@
-name: Sync fork (merge-upstream)
+# .github/workflows/sync-upstream.yml
+name: Sync fork from upstream
 
 on:
   schedule:
-    - cron: "0 0 * * *"   # daily 00:00 UTC
-  workflow_dispatch:       # allow manual runs
+    - cron: '0 0 * * *'   # daily at 00:00 UTC
+  workflow_dispatch:
 
 permissions:
-  contents: write          # needed for the API to write the merge commit
+  contents: read          # push uses PAT, so GITHUB_TOKEN can stay read-only
 
 jobs:
   sync:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Sync fork from upstream (server-side merge)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          BRANCH: main         # change if your default branch is not main
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false  # avoid using GITHUB_TOKEN for pushes
+
+      - name: Configure Git
         run: |
-          set -euo pipefail
-          API="https://api.github.com/repos/${GITHUB_REPOSITORY}/merge-upstream"
-          PAYLOAD='{"branch":"'"$BRANCH"'"}'
+          git config user.name  "upstream-sync-bot"
+          git config user.email "upstream-sync-bot@users.noreply.github.com"
 
-          # Call the GitHub API: identical to the "Sync fork" button
-          STATUS=$(curl -sS -o resp.json -w "%{http_code}" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            -X POST "$API" -d "$PAYLOAD")
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/Equicord/Equicord.git || true
+          git fetch upstream --prune
 
-          echo "HTTP $STATUS"
-          cat resp.json || true
-
-          # Treat "merge conflict" as a non-failing run (you can resolve later)
-          if [ "$STATUS" = "200" ]; then
-            echo "Upstream merged into $BRANCH."
-          elif [ "$STATUS" = "409" ]; then
-            echo "Merge conflict from upstream. Leaving branch unchanged."
-            exit 0
+      - name: Merge upstream/main into fork/main
+        run: |
+          git checkout main
+          # Fast-forward if possible; otherwise create a merge commit
+          if git merge-base --is-ancestor main upstream/main; then
+            echo "Already up to date."
           else
-            echo "merge-upstream API returned HTTP $STATUS"
-            exit 1
+            git merge --no-edit upstream/main
           fi
+
+      - name: Push back to origin using PAT (allows workflow file updates)
+        env:
+          GH_PAT: ${{ secrets.UPSTREAM_SYNC_PAT }}
+        run: |
+          # Use token-authenticated HTTPS remote
+          git remote set-url origin "https://x-access-token:${GH_PAT}@github.com/${{ github.repository }}.git"
+          git push origin main
