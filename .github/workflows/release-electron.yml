@@ -52,6 +52,16 @@ jobs:
       #  - upload platform installer(s) and the updater metadata: latest.yml / latest-*.yml + blockmaps
       - name: Package & publish to GitHub Releases
         env:
-          GH_TOKEN: ${{ github.token }}   # electron-builder reads GH_TOKEN
+          GH_TOKEN: ${{ github.token }}     # electron-builder uses GH_TOKEN for publishing
         run: |
-          pnpm run package -- --publish always --config eb.publish.yml || pnpm package --publish always --config eb.publish.yml
+          # Create the publish override (tells electron-builder to publish to YOUR fork)
+          cat > eb.publish.yml <<'YAML'
+          publish:
+            - provider: github
+              owner: ${GITHUB_REPOSITORY%%/*}
+              repo: ${GITHUB_REPOSITORY#*/}
+          YAML
+      
+          # Build & publish (Windows NSIS example; remove flags to build all defaults)
+          pnpm exec electron-builder --publish always --config eb.publish.yml --win nsis
+
