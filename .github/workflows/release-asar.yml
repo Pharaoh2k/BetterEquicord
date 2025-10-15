@@ -1,0 +1,57 @@
+name: Build and Release equicord.asar
+
+on:
+  push:
+    tags:
+      - "v*"           # push a tag like v0.1.0
+  workflow_dispatch:
+
+permissions:
+  contents: write       # required to create releases and upload assets
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "pnpm"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Build Equicord
+        run: pnpm buildStandalone
+
+      # Pack the build into equicord.asar with equibop/ at the root
+      - name: Pack equicord.asar
+        shell: bash
+        run: |
+          set -euxo pipefail
+          OUT_DIR="dist"
+          test -f "$OUT_DIR/main.js" || (echo "main.js not found in $OUT_DIR" && exit 1)
+          mkdir -p packroot/equibop
+          cp -r "$OUT_DIR"/. packroot/equibop/
+          npx asar pack packroot equicord.asar
+          npx asar list equicord.asar | head  # sanity check; expect equibop/main.js
+
+      - name: Create or update GitHub Release for this tag
+        uses: softprops/action-gh-release@v2
+        with:
+          files: equicord.asar
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          make_latest: true
