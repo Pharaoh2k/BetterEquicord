@@ -1,57 +1,73 @@
-name: Build and Release equicord.asar
+name: Build and Release equibop.asar
 
 on:
   push:
-    tags:
-      - "v*"           # push a tag like v0.1.0
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
-  contents: write       # required to create releases and upload assets
+  contents: write
 
 jobs:
   build-and-release:
     runs-on: ubuntu-latest
+    env:
+      # gh CLI uses this for auth
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: "pnpm"
-
+      # IMPORTANT: set up pnpm BEFORE setup-node when using cache: pnpm
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
           version: 9
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
 
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
 
+      # Build your standalone bundle (adjust if your build command differs)
       - name: Build Equicord
         run: pnpm buildStandalone
 
-      # Pack the build into equicord.asar with equibop/ at the root
-      - name: Pack equicord.asar
+      # Pack the build into equibop.asar with equibop/ at the root
+      - name: Pack equibop.asar
         shell: bash
         run: |
           set -euxo pipefail
           OUT_DIR="dist"
           test -f "$OUT_DIR/main.js" || (echo "main.js not found in $OUT_DIR" && exit 1)
+
           mkdir -p packroot/equibop
           cp -r "$OUT_DIR"/. packroot/equibop/
-          npx asar pack packroot equicord.asar
-          npx asar list equicord.asar | head  # sanity check; expect equibop/main.js
 
-      - name: Create or update GitHub Release for this tag
-        uses: softprops/action-gh-release@v2
-        with:
-          files: equicord.asar
-          draft: false
-          prerelease: false
-          generate_release_notes: true
-          make_latest: true
+          npx asar pack packroot equibop.asar
+          # sanity check
+          npx asar list equibop.asar | head
+
+      # Seed a non-prerelease "latest" if none exists (so next step can clobber)
+      - name: Seed latest release if missing
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! gh release view latest >/dev/null 2>&1; then
+            # Use a starter tag; you can change this
+            gh release create v0.0.1 --title "v0.0.1" --notes "Initial seed release" --latest
+          fi
+
+      # Upload to the latest release (mimics upstream's gh upload latest --clobber)
+      - name: Upload equibop.asar to latest
+        run: gh release upload latest --clobber equibop.asar
