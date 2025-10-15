@@ -1,49 +1,50 @@
 # .github/workflows/sync-upstream.yml
-name: Sync fork from upstream
+name: Sync fork from upstream (merge, keep my custom files)
 
 on:
   schedule:
-    - cron: '0 0 * * *'   # daily at 00:00 UTC
+    - cron: "5 0 * * *"   # daily at 00:05 UTC (avoid top-of-hour congestion)
   workflow_dispatch:
 
+# We’ll push with your PAT, so GITHUB_TOKEN can stay read-only.
 permissions:
-  contents: read          # push uses PAT, so GITHUB_TOKEN can stay read-only
+  contents: read
 
 jobs:
   sync:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout fork
+      - name: Checkout fork (full history; don't persist GITHUB_TOKEN)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          persist-credentials: false  # avoid using GITHUB_TOKEN for pushes
+          persist-credentials: false
 
       - name: Configure Git
         run: |
           git config user.name  "upstream-sync-bot"
           git config user.email "upstream-sync-bot@users.noreply.github.com"
 
-      - name: Add upstream remote
+      - name: Add & fetch upstream
         run: |
           git remote add upstream https://github.com/Equicord/Equicord.git || true
           git fetch upstream --prune
 
-      - name: Merge upstream/main into fork/main
+      - name: Merge upstream/main into fork/main (preserves your extra folder)
         run: |
           git checkout main
-          # Fast-forward if possible; otherwise create a merge commit
-          if git merge-base --is-ancestor main upstream/main; then
-            echo "Already up to date."
-          else
-            git merge --no-edit upstream/main
-          fi
+          # Fast-forward if possible; otherwise create a merge commit (like the UI "Sync fork")
+          git merge --ff-only upstream/main || git merge --no-edit upstream/main
 
-      - name: Push back to origin using PAT (allows workflow file updates)
+      - name: Push back to origin using PAT (works even when workflows changed)
         env:
-          GH_PAT: ${{ secrets.UPSTREAM_SYNC_PAT }}
+          PAT: ${{ secrets.UPSTREAM_SYNC_PAT }}
         run: |
-          # Use token-authenticated HTTPS remote
-          git remote set-url origin "https://x-access-token:${GH_PAT}@github.com/${{ github.repository }}.git"
+          # Use the repository *owner* as the USERNAME and the PAT as the password.
+          # This is the correct PAT URL format for HTTPS pushes:
+          #   https://USERNAME:PAT@github.com/OWNER/REPO.git
+          git remote set-url origin "https://${{ github.repository_owner }}:${PAT}@github.com/${{ github.repository }}.git"
+
+          # Push the merged result
           git push origin main
