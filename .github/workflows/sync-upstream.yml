@@ -1,35 +1,43 @@
-name: Sync Fork with Upstream
+name: Sync fork (merge-upstream)
 
 on:
   schedule:
     - cron: "0 0 * * *"   # daily 00:00 UTC
-  workflow_dispatch:
+  workflow_dispatch:       # allow manual runs
 
-# Do NOT put `workflows:` here; it’s not a valid permission key.
 permissions:
-  contents: write
-  actions: read
+  contents: write          # needed for the API to write the merge commit
 
 jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout (no persisted creds)
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: false
+      - name: Sync fork from upstream (server-side merge)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: main         # change if your default branch is not main
+        run: |
+          set -euo pipefail
+          API="https://api.github.com/repos/${GITHUB_REPOSITORY}/merge-upstream"
+          PAYLOAD='{"branch":"'"$BRANCH"'"}'
 
-      - name: Sync upstream → fork
-        uses: aormsby/Fork-Sync-With-Upstream-action@v3.4.1
-        with:
-          upstream_sync_repo: Equicord/Equicord
-          upstream_sync_branch: main
-          target_sync_branch: main
+          # Call the GitHub API: identical to the "Sync fork" button
+          STATUS=$(curl -sS -o resp.json -w "%{http_code}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -X POST "$API" -d "$PAYLOAD")
 
-          # Use a PAT that has the `workflow` scope (classic),
-          # or a fine-grained PAT with Contents: Read & write + Actions: Read & write.
-          target_repo_token: ${{ secrets.UPSTREAM_SYNC_PAT }}
+          echo "HTTP $STATUS"
+          cat resp.json || true
 
-          git_config_user: "GH Action - Upstream Sync"
-          git_config_email: "action@github.com"
-          shallow_since: "1 month ago"
+          # Treat "merge conflict" as a non-failing run (you can resolve later)
+          if [ "$STATUS" = "200" ]; then
+            echo "Upstream merged into $BRANCH."
+          elif [ "$STATUS" = "409" ]; then
+            echo "Merge conflict from upstream. Leaving branch unchanged."
+            exit 0
+          else
+            echo "merge-upstream API returned HTTP $STATUS"
+            exit 1
+          fi
