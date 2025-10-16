@@ -63,6 +63,33 @@ export function getFactoryPatchedBy(moduleId: PropertyKey, webpackRequire = wreq
 
 const logger = new Logger("WebpackPatcher", "#8caaee");
 
+// --- BD Compat: export override storage ---
+const exportOverrides: WeakMap<object, Map<PropertyKey, unknown>> = new WeakMap();
+
+function setExportOverride(exportsObj: object, key: PropertyKey, value: unknown) {
+    let map = exportOverrides.get(exportsObj);
+    if (!map) { map = new Map(); exportOverrides.set(exportsObj, map); }
+    map.set(key, value);
+}
+
+function getExportOverride(exportsObj: object, key: PropertyKey): unknown | undefined {
+    const map = exportOverrides.get(exportsObj);
+    return map?.get(key);
+}
+
+function clearExportOverride(exportsObj: object, key?: PropertyKey) {
+    const map = exportOverrides.get(exportsObj);
+    if (!map) return;
+    if (typeof key === "undefined") {
+        exportOverrides.delete(exportsObj);
+    } else {
+        map.delete(key);
+        if (map.size === 0) exportOverrides.delete(exportsObj);
+    }
+}
+// --- /BD Compat ---
+
+
 /** Whether we tried to fallback to the WebpackRequire of the factory, or disabled patches */
 let wreqFallbackApplied = false;
 
@@ -200,22 +227,27 @@ define(Function.prototype, "m", {
 
             define(this, "m", { value: proxiedModuleFactories });
 
-            // Overwrite Webpack's defineExports function to define the export descriptors configurable.
-            // This is needed so we can later blacklist specific exports from Webpack search by making them non-enumerable
-            this.d = function (exports, definition) {
+            // Overwrite Webpack's defineExports to keep live bindings by default,
+            // while allowing BD-style overrides via a setter stored out-of-line.
+            this.d = function (exports: any, definition: Record<string, () => any>) {
                 for (const key in definition) {
                     if (Object.hasOwn(definition, key) && !Object.hasOwn(exports, key)) {
                         Object.defineProperty(exports, key, {
                             enumerable: true,
                             configurable: true,
-                            // get: definition[key],
-                            /* Define a dynamic getter instead of a static one and add a setter. Credits: Davvy - BD Compatibility Layer Fork */
-                            get: () => definition[key](),
-                            set: v => { definition[key] = () => v; },
+                            get() {
+                                const ov = getExportOverride(exports, key);
+                                return ov !== undefined ? ov : definition[key]();
+                            },
+                            set(v: unknown) {
+                                // Allow any value (most BD patches set functions)
+                                setExportOverride(exports, key, v);
+                            }
                         });
                     }
                 }
             };
+
         };
     }
 });
