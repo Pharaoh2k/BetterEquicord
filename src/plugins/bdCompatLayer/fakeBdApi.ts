@@ -180,6 +180,80 @@ export const WebpackHolder = {
         }
         return BdApi_getModule(...args);
     },
+    getMangled<T extends object>(filter: any, mappers: Record<keyof T, Function>, options: any = {}): T {
+        const {raw = false, ...rest} = options;
+
+        // Convert string/regex to bySource filter like BD does
+        if (typeof filter === "string" || filter instanceof RegExp) {
+            filter = this.Filters.bySource(filter);
+        }
+
+        // Get the module using the filter
+        let module = this.getModule(filter, {raw, ...rest});
+        if (!module) return {} as T;
+        if (raw) module = module.exports;
+
+        // IMPORTANT: Create a proxy module that resolves getters to writable properties
+        const writableModule = {};
+        for (const key in module) {
+            const desc = Object.getOwnPropertyDescriptor(module, key);
+            if (desc && desc.get && !desc.set) {
+                // Resolve getter to actual value and make it writable
+                try {
+                    const value = desc.get.call(module);
+                    writableModule[key] = value;
+                } catch (e) {
+                    writableModule[key] = undefined;
+                }
+            } else {
+                writableModule[key] = module[key];
+            }
+        }
+
+        // Now map using the writable module
+        const mapped = {} as Partial<T>;
+        const moduleKeys = Object.keys(writableModule);
+        const mapperKeys = Object.keys(mappers) as Array<keyof T>;
+
+        // Find matching properties
+        for (let i = 0; i < moduleKeys.length; i++) {
+            const searchKey = moduleKeys[i];
+            if (!Object.prototype.hasOwnProperty.call(writableModule, searchKey)) continue;
+
+            for (let j = 0; j < mapperKeys.length; j++) {
+                const key = mapperKeys[j];
+                if (!Object.prototype.hasOwnProperty.call(mappers, key)) continue;
+                if (Object.prototype.hasOwnProperty.call(mapped, key)) continue;
+
+                try {
+                    const value = writableModule[searchKey];
+
+                    if (mappers[key](value)) {
+                        // Store as a regular writable property
+                        mapped[key] = value;
+                    }
+                } catch (e) {
+                    // Skip if mapper throws
+                }
+            }
+        }
+
+        // Ensure ALL mapper keys exist (even if undefined)
+        for (let i = 0; i < mapperKeys.length; i++) {
+            const key = mapperKeys[i];
+            if (!Object.prototype.hasOwnProperty.call(mapped, key)) {
+                mapped[key] = undefined;
+            }
+        }
+
+        // Add the special BD symbol property - use writableModule so Patcher can modify it
+        Object.defineProperty(mapped, Symbol("betterdiscord.getMangled"), {
+            value: writableModule,
+            configurable: false
+        });
+
+        return mapped as T;
+    },
     waitForModule(filter, options: any = {}) {
         const { defaultExport = true, searchExports = false, searchDefault = true, raw = false, signal } = options;
 
@@ -314,9 +388,6 @@ export const WebpackHolder = {
     get modules() {
 
         return Vencord.Webpack.wreq.m;
-    },
-    get getMangled() {
-        return Vencord.Webpack.mapMangledModule;
     },
     getWithKey(filter, options: { target?: any; } = {}) {
         const { target: opt_target = null, ...unrelated } = options;
