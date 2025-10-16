@@ -208,7 +208,10 @@ define(Function.prototype, "m", {
                         Object.defineProperty(exports, key, {
                             enumerable: true,
                             configurable: true,
-                            get: definition[key],
+                            // get: definition[key],
+                            /* Define a dynamic getter instead of a static one and add a setter. Credits: Davvy - BD Compatibility Layer Fork */
+                            get: () => definition[key](),
+                            set: v => { definition[key] = () => v; },
                         });
                     }
                 }
