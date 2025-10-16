@@ -328,6 +328,43 @@ const wrapFilter = filter => (exports, module, moduleId) => {
 };
 
 /**
+ * BD's exact getDefaultKey function
+ * added: Check that exports is an object
+ */
+function getDefaultKey(module) {
+    if (!module?.exports) return undefined;
+
+    // Check that exports is an object (not a string, number, etc.)
+    if (typeof module.exports !== "object" || module.exports === null) {
+        return undefined;
+    }
+
+    if ("Z" in module.exports) return "Z";
+    if ("ZP" in module.exports) return "ZP";
+    if (module.exports.__esModule && "default" in module.exports) return "default";
+    return undefined;
+}
+
+/**
+ * Creates a synthetic wrapper for bare function exports
+ */
+function asBdWrapper(found) {
+    if (found && typeof found === "object") return found;
+
+    if (typeof found === "function") {
+        const wrapper = Object.create(null);
+        Object.defineProperties(wrapper, {
+            Z: { value: found, enumerable: true },
+            ZP: { value: found, enumerable: true },
+            default: { value: found, enumerable: true }
+        });
+        return wrapper;
+    }
+
+    return found;
+}
+
+/**
  * @summary Code taken from BetterDiscord (sourced from commit: cb08178b7702fe2612343f279c007eb2a638a113)
  * @description Changes:
  *
@@ -336,12 +373,17 @@ const wrapFilter = filter => (exports, module, moduleId) => {
  *  Formatting changed
  */
 function getModule(filter, options = {}) {
-    const { first = true, defaultExport = true, searchExports = false } = options;
+    const { first = true, defaultExport = true, searchExports = false, searchDefault = true, raw = false } = options;
+    // Debug log for YABDP4Nitro calls
+    if (filter && filter.toString().includes("x=>x")) {
+        console.log("[TXDBG] getModule called with x=>x filter, options:", options);
+    }
     const wrappedFilter = wrapFilter(filter);
 
     const modules = Vencord.Webpack.cache;
-    const rm = [];
+    const rm = []; // Collect all matches when first = false
     const indices = Object.keys(modules);
+
     for (let i = 0; i < indices.length; i++) {
         const index = indices[i];
         if (!modules.hasOwnProperty(index)) continue;
@@ -352,34 +394,89 @@ function getModule(filter, options = {}) {
         const { exports } = module;
         if (!exports || exports === window || exports === document.documentElement || exports[Symbol.toStringTag] === "DOMTokenList") continue;
 
-        if (typeof (exports) === "object" && searchExports && !exports.TypedArray) {
-            for (const key in exports) {
-                let foundModule = null;
-                let wrappedExport = null;
-                try { wrappedExport = exports[key]; } catch { continue; }
+        // Handle bare function exports
+        if (typeof exports === "function") {
+            if (wrappedFilter(exports, module, index)) {
+                const result = !defaultExport ? asBdWrapper(exports) : exports;
+                if (first) return raw ? module : result;
+                rm.push(raw ? module : result);
+            }
 
-                if (!wrappedExport) continue;
-                if (wrappedFilter(wrappedExport, module, index)) foundModule = wrappedExport;
-                if (!foundModule) continue;
-                if (first) return foundModule;
-                rm.push(foundModule);
+            // Also search function's own properties if searchExports is true
+            if (searchExports && typeof exports === "object" && exports !== null) {
+                const keys = Reflect.ownKeys(exports);
+                for (let j = 0; j < keys.length; j++) {
+                    const key = keys[j];
+
+                    const descriptor = Object.getOwnPropertyDescriptor(exports, key);
+                    let exported;
+
+                    try {
+                        exported = descriptor && descriptor.get
+                            ? descriptor.get.call(exports)
+                            : exports[key];
+                    } catch { continue; }
+
+                    if (!exported) continue;
+
+                    if (wrappedFilter(exported, module, index)) {
+                        const result = exported;
+                        if (first) return raw ? module : result;
+                        rm.push(raw ? module : result);
+                    }
+                }
+            }
+            continue;
+        }
+
+        // Handle normal object exports
+        if (wrappedFilter(exports, module, index)) {
+            if (first) return raw ? module : exports;
+            rm.push(raw ? module : exports);
+        }
+
+        if (!searchExports && !searchDefault) continue;
+
+        const defaultKey = getDefaultKey(module);
+        const searchKeys = [];
+
+        if (searchExports) {
+            // Only use Reflect.ownKeys if exports is an object
+            if (typeof exports === "object" && exports !== null) {
+                searchKeys.push(...Reflect.ownKeys(exports));
+            }
+        } else if (searchDefault && defaultKey) {
+            searchKeys.push(defaultKey);
+        }
+
+        for (let j = 0; j < searchKeys.length; j++) {
+            const key = searchKeys[j];
+
+            const descriptor = Object.getOwnPropertyDescriptor(exports, key);
+            let exported;
+
+            try {
+                exported = descriptor && descriptor.get
+                    ? descriptor.get.call(exports)
+                    : exports[key];
+            } catch { continue; }
+
+            if (!exported) continue;
+
+            if (wrappedFilter(exported, module, index)) {
+                // Return wrapper when defaultExport is false and we matched the default
+                if (!defaultExport && key === defaultKey) {
+                    if (first) return exports;
+                    rm.push(exports);
+                } else {
+                    if (first) return raw ? module : exported;
+                    rm.push(raw ? module : exported);
+                }
             }
         }
-        else {
-            let foundModule = null;
-            if (exports.Z && wrappedFilter(exports.Z, module, index)) foundModule = defaultExport ? exports.Z : exports;
-            if (exports.ZP && wrappedFilter(exports.ZP, module, index)) foundModule = defaultExport ? exports.ZP : exports;
-            if (exports.__esModule && exports.default && wrappedFilter(exports.default, module, index)) foundModule = defaultExport ? exports.default : exports;
-            if (wrappedFilter(exports, module, index)) foundModule = exports;
-            if (!foundModule) continue;
-            if (first) return foundModule;
-            rm.push(foundModule);
-        }
-
-
     }
 
-    return first || rm.length == 0 ? undefined : rm;
+    return first ? undefined : rm;
 }
 
 const ReactUtils_filler = {

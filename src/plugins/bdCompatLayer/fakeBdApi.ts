@@ -29,6 +29,7 @@
  * - Added radio setting type support in buildSettingsPanel
  * - Fixed Logger getter to return function reference instead of calling it
  * - Commented code cleanup
+ * - Fixed waitForModule to respect defaultExport option and wrap bare function exports like BD
 */
 
 /* eslint-disable eqeqeq */
@@ -179,10 +180,51 @@ export const WebpackHolder = {
         }
         return BdApi_getModule(...args);
     },
-    waitForModule(filter) {
+    waitForModule(filter, options: any = {}) {
+        const { defaultExport = true, searchExports = false, searchDefault = true, raw = false, signal } = options;
+
         return new Promise((resolve, reject) => {
-            Vencord.Webpack.waitFor(filter, module => {
-                resolve(module);
+            // Handle abort signal
+            if (signal && signal.aborted) {
+                reject(new Error("Aborted"));
+                return;
+            }
+
+            const abortHandler = signal ? () => {
+                reject(new Error("Aborted"));
+            } : null;
+
+            if (signal) {
+                signal.addEventListener("abort", abortHandler);
+            }
+
+            // First check if module already exists
+            const existingModule = this.getModule(filter, options);
+            if (existingModule) {
+                if (signal) signal.removeEventListener("abort", abortHandler);
+                resolve(existingModule);
+                return;
+            }
+
+            // Wait for module to load
+            Vencord.Webpack.waitFor(filter, (foundModule) => {
+                if (signal) signal.removeEventListener("abort", abortHandler);
+
+                // Apply the same logic as getModule for handling the result
+                let result = foundModule;
+
+                // If it's a bare function and defaultExport is false, wrap it
+                if (!defaultExport && typeof foundModule === 'function') {
+                    const wrapper = Object.create(null);
+                    Object.defineProperties(wrapper, {
+                        Z:       { value: foundModule, enumerable: true },
+                        ZP:      { value: foundModule, enumerable: true },
+                        default: { value: foundModule, enumerable: true }
+                    });
+                    result = wrapper;
+                }
+
+                resolve(raw ? { exports: result } : result);
             });
         });
     },
