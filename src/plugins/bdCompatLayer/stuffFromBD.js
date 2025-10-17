@@ -23,7 +23,7 @@
 
 /* eslint-disable eqeqeq */
 /* eslint-disable no-prototype-builtins */
-/* globals BdApi window document Vencord */
+/* globals BdApi window document Vencord console */
 /* eslint no-undef:error */
 /**
  * This file contains code taken from https://github.com/BetterDiscord/BetterDiscord
