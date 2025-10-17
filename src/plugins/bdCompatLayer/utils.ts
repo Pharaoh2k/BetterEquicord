@@ -24,7 +24,6 @@
  * - Enhanced addLogger function to accept pluginName parameter and added static helper methods
  * - Added Discord keybind registry helpers (resolveKeybinds, registerOrUpdateKeybind, deleteKeybind)
  * - Implemented keybind registration for display/persistence in Discord settings
- * - Improved deleteKeybind and registerOrUpdateKeybind
 */
 
 import { Link } from "@components/Link";
@@ -608,15 +607,7 @@ export function registerOrUpdateKeybind(id: string, shortcutTokensLower: string[
     if (!KeybindsModule) return;
 
     if (!shortcutTokensLower || shortcutTokensLower.length === 0) {
-        // Check if keybind exists before trying to delete
-        try {
-            const exists = KeybindStore?.getState?.()?.[id] ||
-                          KeybindStore?.getKeybindForAction?.(id) ||
-                          KeybindStore?.getKeybind?.(id);
-            if (exists) {
-                KeybindsModule.deleteKeybind(id);
-            }
-        } catch { }
+        try { KeybindsModule.deleteKeybind?.(id); } catch { }
         return;
     }
 
@@ -641,23 +632,6 @@ export function registerOrUpdateKeybind(id: string, shortcutTokensLower: string[
 }
 
 export function deleteKeybind(id: string) {
-    const { KeybindsModule, KeybindStore } = resolveKeybinds();
-    if (!KeybindsModule) return;
-
-    // Check if the keybind actually exists in Discord's store before trying to delete it
-    try {
-        // Try to get the keybind first to verify it exists
-        const exists = KeybindStore?.getState?.()?.[id] ||
-                      KeybindStore?.getKeybindForAction?.(id) ||
-                      KeybindStore?.getKeybind?.(id);
-
-        // Only attempt deletion if the keybind exists in Discord's store
-        if (exists) {
-            KeybindsModule.deleteKeybind(id);
-        }
-        // If it doesn't exist, silently skip (it's probably a BD-only keybind)
-    } catch (e) {
-        // Silently fail if there's any error
-    }
+    const { KeybindsModule } = resolveKeybinds();
+    try { KeybindsModule?.deleteKeybind?.(id); } catch { }
 }
-
