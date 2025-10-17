@@ -25,13 +25,11 @@ import { Button, React, useEffect, useMemo, useRef, useState } from "@webpack/co
 
 import { deleteKeybind, registerOrUpdateKeybind } from "../utils";
 
-
-
 /**
  * KeybindSettingComponent
- * - Records a key chord (scoped; no global listeners while idle)
+ * - Records a key chord (scoped. no global listeners while idle)
  * - Syncs to Discord's keybind registry via helpers in utils.ts
- * - Emits lowercase tokens (Discord format) through onChange
+ * - Emits capitalized key names (BD plugin format) through onChange
  *
  * option: {
  *   value?: string[];
@@ -56,6 +54,8 @@ export function KeybindSettingComponent(props: {
     const [combo, setCombo] = useState<string[]>(
         Array.isArray(props.option?.value) ? (props.option.value as string[]) : []
     );
+    const comboRef = useRef<string[]>(combo);
+    const pluginFormatRef = useRef<string[]>([]);
     const captureRef = useRef<HTMLDivElement | null>(null);
 
     // Small grace window so users can hit a normal key, then add modifiers.
@@ -102,23 +102,83 @@ export function KeybindSettingComponent(props: {
         return k;
     };
 
-    const fromEvent = (e: React.KeyboardEvent): string[] => {
-        const parts: string[] = [];
-        if (e.ctrlKey) parts.push("ctrl");
-        if (e.metaKey) parts.push("cmd");
-        if (e.altKey) parts.push("alt");
-        if (e.shiftKey) parts.push("shift");
+    // Convert lowercase token to BD plugin format (capitalized)
+    const toPluginFormat = (token: string): string => {
+        const map: Record<string, string> = {
+            ctrl: "Ctrl",
+            cmd: "Cmd",
+            alt: "Alt",
+            shift: "Shift",
+            esc: "Escape",
+            escape: "Escape",
+            space: "Space",
+            backspace: "Backspace",
+            delete: "Delete",
+            tab: "Tab",
+            enter: "Enter",
+            home: "Home",
+            end: "End",
+            pageup: "PageUp",
+            pagedown: "PageDown",
+            arrowup: "ArrowUp",
+            arrowdown: "ArrowDown",
+            arrowleft: "ArrowLeft",
+            arrowright: "ArrowRight"
+        };
 
-        const main = toToken(e.key);
-        if (!["ctrl", "alt", "shift", "cmd"].includes(main)) {
-            parts.push(main);
-        } else if (parts.length === 0) {
-            parts.push(main);
+        if (map[token]) return map[token];
+
+        // F1-F12 keys
+        if (/^f\d{1,2}$/i.test(token)) return token.toUpperCase();
+
+        // Single character - uppercase it
+        if (token.length === 1) return token.toUpperCase();
+
+        return token;
+    };
+
+    const fromEvent = (e: React.KeyboardEvent): { discordTokens: string[], pluginTokens: string[] } => {
+        const discordParts: string[] = [];
+        const pluginParts: string[] = [];
+
+        if (e.ctrlKey) {
+            discordParts.push("ctrl");
+            pluginParts.push("Ctrl");
+        }
+        if (e.metaKey) {
+            discordParts.push("cmd");
+            pluginParts.push("Cmd");
+        }
+        if (e.altKey) {
+            discordParts.push("alt");
+            pluginParts.push("Alt");
+        }
+        if (e.shiftKey) {
+            discordParts.push("shift");
+            pluginParts.push("Shift");
         }
 
-        const uniq: string[] = [];
-        for (const t of parts) if (!uniq.includes(t)) uniq.push(t);
-        return uniq.slice(0, maxKeys);
+        const main = toToken(e.key);
+        const mainPlugin = toPluginFormat(main);
+
+        if (!["ctrl", "alt", "shift", "cmd"].includes(main)) {
+            discordParts.push(main);
+            pluginParts.push(mainPlugin);
+        } else if (discordParts.length === 0) {
+            discordParts.push(main);
+            pluginParts.push(mainPlugin);
+        }
+
+        const uniqDiscord: string[] = [];
+        const uniqPlugin: string[] = [];
+        for (let i = 0; i < discordParts.length && i < maxKeys; i++) {
+            if (!uniqDiscord.includes(discordParts[i])) {
+                uniqDiscord.push(discordParts[i]);
+                uniqPlugin.push(pluginParts[i]);
+            }
+        }
+
+        return { discordTokens: uniqDiscord, pluginTokens: uniqPlugin };
     };
 
     const display = useMemo(() => {
@@ -133,11 +193,12 @@ export function KeybindSettingComponent(props: {
         setCombo([]);
         setTimeout(() => captureRef.current?.focus(), 0);
     };
+
     const stopRecording = (commit: boolean) => {
         setRecording(false);
         if (commit) {
-            props.onChange(combo);
-            registerOrUpdateKeybind(keybindId, combo);
+            props.onChange(pluginFormatRef.current);
+            registerOrUpdateKeybind(keybindId, comboRef.current);
         }
         if (commitTimer.current) {
             window.clearTimeout(commitTimer.current);
@@ -149,6 +210,7 @@ export function KeybindSettingComponent(props: {
         e.stopPropagation();
         if (disabled) return;
         setCombo([]);
+        pluginFormatRef.current = [];
         props.onChange([]);
         deleteKeybind(keybindId);
     };
@@ -162,15 +224,22 @@ export function KeybindSettingComponent(props: {
             stopRecording(false);
             return;
         }
-        const chord = fromEvent(e);
-        setCombo(chord);
+        const { discordTokens, pluginTokens } = fromEvent(e);
+        setCombo(discordTokens);
+        comboRef.current = discordTokens;
+        pluginFormatRef.current = pluginTokens;
 
         // If a non-modifier is present, schedule commit (grace window).
-        if (chord.some(k => !["ctrl", "alt", "shift", "cmd"].includes(k))) {
+        if (discordTokens.some(k => !["ctrl", "alt", "shift", "cmd"].includes(k))) {
             if (commitTimer.current) window.clearTimeout(commitTimer.current);
             commitTimer.current = window.setTimeout(() => stopRecording(true), GRACE_MS);
         }
     };
+
+    // Keep ref in sync with state
+    useEffect(() => {
+        comboRef.current = combo;
+    }, [combo]);
 
     // Sync external changes
     useEffect(() => {
@@ -235,7 +304,7 @@ export function KeybindSettingComponent(props: {
 
             <div style={{ display: "flex", gap: "8px" }}>
                 <Button
-                    onClick={() => (recording ? stopRecording(false) : startRecording())}
+                    onClick={() => (recording ? stopRecording(true) : startRecording())}
                     size="small"
                     color={recording ? Button.Colors?.RED : Button.Colors?.PRIMARY}
                     disabled={disabled}
@@ -256,7 +325,7 @@ export function KeybindSettingComponent(props: {
             </div>
 
             <div id={descId} style={{ gridColumn: "1 / -1", fontSize: "0.875rem", opacity: 0.7, color: "inherit" }}>
-                Stored as Discord tokens (e.g. <code>['ctrl','shift','k']</code>). Press <kbd>Esc</kbd> to cancel while recording.
+                Stored as capitalized key names for BD plugins (e.g. <code>['Ctrl','S']</code>). Press <kbd>Esc</kbd> to cancel while recording.
             </div>
 
         </div>
