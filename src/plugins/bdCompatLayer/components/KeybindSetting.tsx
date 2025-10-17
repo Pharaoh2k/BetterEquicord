@@ -55,7 +55,6 @@ export function KeybindSettingComponent(props: {
         Array.isArray(props.option?.value) ? (props.option.value as string[]) : []
     );
     const comboRef = useRef<string[]>(combo);
-    const pluginFormatRef = useRef<string[]>([]);
     const captureRef = useRef<HTMLDivElement | null>(null);
 
     // Small grace window so users can hit a normal key, then add modifiers.
@@ -137,48 +136,25 @@ export function KeybindSettingComponent(props: {
         return token;
     };
 
-    const fromEvent = (e: React.KeyboardEvent): { discordTokens: string[], pluginTokens: string[] } => {
-        const discordParts: string[] = [];
-        const pluginParts: string[] = [];
+    const fromEvent = (e: React.KeyboardEvent): string[] => {
+        const parts: string[] = [];
 
-        if (e.ctrlKey) {
-            discordParts.push("ctrl");
-            pluginParts.push("Ctrl");
-        }
-        if (e.metaKey) {
-            discordParts.push("cmd");
-            pluginParts.push("Cmd");
-        }
-        if (e.altKey) {
-            discordParts.push("alt");
-            pluginParts.push("Alt");
-        }
-        if (e.shiftKey) {
-            discordParts.push("shift");
-            pluginParts.push("Shift");
-        }
+        if (e.ctrlKey) parts.push("ctrl");
+        if (e.metaKey) parts.push("cmd");
+        if (e.altKey) parts.push("alt");
+        if (e.shiftKey) parts.push("shift");
 
         const main = toToken(e.key);
-        const mainPlugin = toPluginFormat(main);
 
         if (!["ctrl", "alt", "shift", "cmd"].includes(main)) {
-            discordParts.push(main);
-            pluginParts.push(mainPlugin);
-        } else if (discordParts.length === 0) {
-            discordParts.push(main);
-            pluginParts.push(mainPlugin);
+            parts.push(main);
+        } else if (parts.length === 0) {
+            parts.push(main);
         }
 
-        const uniqDiscord: string[] = [];
-        const uniqPlugin: string[] = [];
-        for (let i = 0; i < discordParts.length && i < maxKeys; i++) {
-            if (!uniqDiscord.includes(discordParts[i])) {
-                uniqDiscord.push(discordParts[i]);
-                uniqPlugin.push(pluginParts[i]);
-            }
-        }
-
-        return { discordTokens: uniqDiscord, pluginTokens: uniqPlugin };
+        const uniq: string[] = [];
+        for (const t of parts) if (!uniq.includes(t)) uniq.push(t);
+        return uniq.slice(0, maxKeys);
     };
 
     const display = useMemo(() => {
@@ -197,20 +173,24 @@ export function KeybindSettingComponent(props: {
     const stopRecording = (commit: boolean) => {
         setRecording(false);
         if (commit) {
-            props.onChange(pluginFormatRef.current);
-            registerOrUpdateKeybind(keybindId, comboRef.current);
+            // Recompute plugin tokens from the latest lowercase combo:
+            const latest = comboRef.current;
+            const pluginTokens = latest.map(t => toPluginFormat(t));
+            props.onChange(pluginTokens);
+            registerOrUpdateKeybind(keybindId, latest);
         }
-        if (commitTimer.current) {
-            window.clearTimeout(commitTimer.current);
-            commitTimer.current = null;
-        }
+        if (commitTimer.current) { window.clearTimeout(commitTimer.current); commitTimer.current = null; }
     };
 
     const clear = (e: React.MouseEvent) => {
         e.stopPropagation();
         if (disabled) return;
+        if (commitTimer.current) {
+            window.clearTimeout(commitTimer.current);
+            commitTimer.current = null;
+        }
         setCombo([]);
-        pluginFormatRef.current = [];
+        comboRef.current = [];
         props.onChange([]);
         deleteKeybind(keybindId);
     };
@@ -224,16 +204,24 @@ export function KeybindSettingComponent(props: {
             stopRecording(false);
             return;
         }
-        const { discordTokens, pluginTokens } = fromEvent(e);
-        setCombo(discordTokens);
-        comboRef.current = discordTokens;
-        pluginFormatRef.current = pluginTokens;
+        const chord = fromEvent(e);
+        setCombo(chord);
+        comboRef.current = chord;
 
         // If a non-modifier is present, schedule commit (grace window).
-        if (discordTokens.some(k => !["ctrl", "alt", "shift", "cmd"].includes(k))) {
+        if (chord.some(k => !["ctrl", "alt", "shift", "cmd"].includes(k))) {
             if (commitTimer.current) window.clearTimeout(commitTimer.current);
             commitTimer.current = window.setTimeout(() => stopRecording(true), GRACE_MS);
         }
+    };
+
+    const onCaptureKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+        if (!recording && (e.key === "Enter" || e.key === " ")) {
+            e.preventDefault();
+            startRecording();
+            return;
+        }
+        onKeyDown(e); // delegate to the existing handler when recording
     };
 
     // Keep ref in sync with state
@@ -243,13 +231,18 @@ export function KeybindSettingComponent(props: {
 
     // Sync external changes
     useEffect(() => {
-        if (Array.isArray(props.option?.value)) setCombo(props.option.value.map(k => k.toLowerCase()));
-    }, [props.option?.value]);
+        if (Array.isArray(props.option?.value)) {
+            const lower = props.option.value.map(k => k.toLowerCase());
+            setCombo(lower);
+            comboRef.current = lower;
+            registerOrUpdateKeybind(keybindId, lower);
+        }
+    }, [props.option?.value, keybindId]);
 
     useEffect(() => {
-        registerOrUpdateKeybind(keybindId, combo);
+        registerOrUpdateKeybind(keybindId, comboRef.current);
         return () => deleteKeybind(keybindId);
-    }, []);
+    }, [keybindId]);
 
     const labelId = `${props.id}-label`;
     const descId = `${props.id}-desc`;
@@ -277,7 +270,7 @@ export function KeybindSettingComponent(props: {
             <div
                 ref={captureRef}
                 tabIndex={disabled ? -1 : 0}
-                onKeyDown={e => onKeyDown(e)}
+                onKeyDown={onCaptureKeyDown}
                 onClick={() => (recording ? undefined : startRecording())}
                 role="button"
                 aria-pressed={recording ? "true" : "false"}
