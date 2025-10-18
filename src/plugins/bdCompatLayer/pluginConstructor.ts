@@ -22,6 +22,7 @@
  *  Modifications to BD Compatibility Layer:
  *  Copyright (c) 2025 Pharaoh2k
  *  - Commented code cleanup
+ *  - Stamp __bdFileSig (on-disk mtime) on addCustomPlugin so enable() can detect on-disk updates and trigger a soft reload.
 */
 
 import ErrorBoundary from "@components/ErrorBoundary";
@@ -456,6 +457,12 @@ export async function addCustomPlugin(generatedPlugin: AssembledBetterDiscordPlu
     const generated = generatedPlugin;
     PluginMeta[generated.name] = { userPlugin: true, folderName: `${generated.name}/${generated.filename}` };
     Vencord.Plugins.plugins[generated.name] = generated as Plugin;
+    // Stamp a file signature so enable() can detect future on-disk updates
+    try {
+        (Vencord.Plugins.plugins[generated.name] as any).__bdFileSig =
+        (window as any).require?.("fs")?.statSync(`${getGlobalApi().Plugins.folder}/${generated.filename}`)?.mtimeMs | 0;
+    } catch { }
+
     Vencord.Settings.plugins[generated.name].enabled = false;
 
     const compatLayerSettings = Vencord.PlainSettings.plugins[PLUGIN_NAME];
