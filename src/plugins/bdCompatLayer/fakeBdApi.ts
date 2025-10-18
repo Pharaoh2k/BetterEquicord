@@ -34,6 +34,12 @@
  *    - Webpack.waitForModule: change abort handling to resolve quietly on AbortSignal and ignore late arrivals; prevents “Uncaught (in promise) Error: Aborted” during plugin stop/update flows.
  *    - BdApi.Plugins: added enable/disable/toggle. Implement reload with soft hot-swap and fallbacks (reload all BD plugins -> page reload).
  *    - Cleanup: ensure Patcher.unpatchAll(name) and DOM.removeStyle(name) on disable/reload.
+ *    - UI.showChangelogModal: wire up real modal (import from `./ui/changelog`) instead of stub.
+ *    - add auto-pop on version bump (queue+debounce) with support for config-array + remote markdown.
+ *    - include tiny parser for `### x.y.z` headings and `- item` bullets; bucket into Added/Improved/Fixes/Other.
+ *    - UI.createTooltip: implement lightweight tooltip with CSS injection, viewport clamping, and smart side flipping.
+ *    - UI.showToast: accept BD-style options object or type strings (info/success/warn/error), map to codes, and guard if module missing.
+ *    - Plugins: when enable/reload detects version change, queue compat changelog display (falls back silently if unavailable).
 */
 
 /* eslint-disable eqeqeq */
@@ -53,6 +59,7 @@ import { fetchWithCorsProxyFallback } from "./fakeStuff";
 import { AssembledBetterDiscordPlugin, addCustomPlugin, convertPlugin } from "./pluginConstructor";
 import { getModule as BdApi_getModule, monkeyPatch as BdApi_monkeyPatch, Patcher, ReactUtils_filler } from "./stuffFromBD";
 import { addLogger, compat_logger, createTextForm, docCreateElement, ObjectMerger } from "./utils";
+import { showChangelogModal as _showChangelogModal } from "./ui/changelog";
 
 class PatcherWrapper {
     #label;
@@ -110,6 +117,169 @@ function safeStopPlugin(name: string) {
     try { getGlobalApi().DOM.removeStyle(name); } catch { }
 }
 
+// --- BdCompat: pending changelog (for plugins that call writeFile + BdApi.Plugins.reload) ---
+const pendingChangelogs = new Map<string, { from: string; to: string }>();
+
+function vcIsNewer(v1: string, v2: string) {
+    const [a, b] = [v1, v2].map(v => v.split(".").map(Number));
+    for (let i = 0; i < Math.max(a.length, b.length); i++) {
+        if ((a[i] || 0) > (b[i] || 0)) return true;
+        if ((a[i] || 0) < (b[i] || 0)) return false;
+    }
+    return false;
+}
+
+// Very small, BD-style parser: headings "### 1.2.3" + bullet lines "- foo"
+function vcParseChangelog(md: string, from: string, to: string) {
+    const lines = md.split("\n");
+    const versions: { version: string; items: string[] }[] = [];
+    let curVer: string | null = null;
+    let items: string[] = [];
+
+    for (const line of lines) {
+        const m = line.match(/^###\s+([\d.]+)/)?.[1];
+        if (m) {
+            if (curVer) versions.push({ version: curVer, items });
+            curVer = m;
+            items = [];
+        } else if (curVer && line.trim().startsWith("-")) {
+            const item = line.trim().slice(1).trim();
+            if (item) items.push(item);
+        }
+    }
+    if (curVer) versions.push({ version: curVer, items });
+
+    const relevant = versions.filter(v => vcIsNewer(v.version, from) && !vcIsNewer(v.version, to));
+    const grouped = { added: [] as string[], improved: [] as string[], fixed: [] as string[], other: [] as string[] };
+
+    for (const v of relevant) {
+        for (const it of v.items) {
+            const lower = it.toLowerCase();
+            const tagged = `${it} (v${v.version})`;
+            if (lower.includes("fix")) grouped.fixed.push(tagged);
+            else if (lower.includes("add") || lower.includes("initial")) grouped.added.push(tagged);
+            else if (lower.includes("improv") || lower.includes("updat")) grouped.improved.push(tagged);
+            else grouped.other.push(tagged);
+        }
+    }
+
+    const result: Array<{ title: string; type?: "fixed" | "added" | "progress" | "improved"; items: string[] }> = [];
+    if (grouped.added.length) result.push({ title: "New Features", type: "added", items: grouped.added });
+    if (grouped.improved.length) result.push({ title: "Improvements", type: "improved", items: grouped.improved });
+    if (grouped.fixed.length) result.push({ title: "Fixes", type: "fixed", items: grouped.fixed });
+    if (grouped.other.length) result.push({ title: "Other Changes", type: "progress", items: grouped.other });
+    return result;
+}
+
+// Show a changelog when a plugin version bumps.
+// Works for (a) config-array changelogs, and (b) remote markdown updaters.
+function tryShowCompatChangelog(name: string, fromVer: string, toVer: string) {
+    // Don’t double-pop if a changelog is already open
+    if (document.querySelector(".bd-cl-host")) return;
+
+    // Get the running plugin entry safely (avoid PluginsHolder.plugins — it doesn’t exist)
+    const entry: any = (Vencord.Plugins.plugins as any)?.[name] ?? null;
+    const instance: any = entry?.instance ?? entry?.plugin?.instance ?? entry;
+    if (!instance) return;
+
+    // Helper: open modal if we have data (BD API shape)
+    const openModal = (changes: Array<{ title: string; type?: "fixed"|"added"|"progress"|"improved"; items: string[] }>) => {
+        if (!Array.isArray(changes) || changes.length === 0) return;
+        getGlobalApi().UI.showChangelogModal({
+            title: name,
+            subtitle: `Version ${toVer}`,
+            changes
+        });
+    };
+
+    // 1) Try the very common “config.changelog” pattern (BD docs demo uses this) :contentReference[oaicite:0]{index=0}
+    const fromConfig =
+        (instance?.config && instance.config.changelog) ||
+        (instance?.constructor?.config && instance.constructor.config.changelog) ||
+        instance?.changelog ||
+        (typeof instance?.getChangelog === "function" ? instance.getChangelog() : undefined);
+
+    if (Array.isArray(fromConfig) && fromConfig.length) {
+        openModal(fromConfig);
+        return;
+    }
+
+    // 2) Try remote markdown (AudioDownloader-style custom updater)
+    const changelogUrl: string | undefined = instance?.updateManager?.urls?.changelog;
+    if (typeof changelogUrl === "string" && changelogUrl) {
+        (async () => {
+            try {
+                // Your Net.fetch expects (url, options) — pass an empty object to satisfy TS. :contentReference[oaicite:1]{index=1}
+                const res = await getGlobalApi().Net.fetch(changelogUrl, {});
+                if (!res || res.status !== 200) return;
+                const md = await res.text();
+
+                // Prefer plugin’s own parser if provided
+                if (typeof instance?.parseChangelog === "function") {
+                    const parsed = instance.parseChangelog(md, fromVer, toVer);
+                    openModal(parsed);
+                    return;
+                }
+
+                // Tiny generic parser: "### 1.2.3" headings + "- change" bullets
+                const lines = md.split("\n");
+                const blocks: { version: string; items: string[] }[] = [];
+                let cur: { version: string; items: string[] } | null = null;
+
+                for (const line of lines) {
+                    const ver = line.match(/^###\s+([\d.]+)/)?.[1];
+                    if (ver) {
+                        if (cur) blocks.push(cur);
+                        cur = { version: ver, items: [] };
+                    } else if (cur && line.trim().startsWith("-")) {
+                        const item = line.trim().slice(1).trim();
+                        if (item) cur.items.push(item);
+                    }
+                }
+                if (cur) blocks.push(cur);
+
+                const isNewer = (a: string, b: string) => {
+                    const A = a.split(".").map(Number), B = b.split(".").map(Number);
+                    for (let i = 0; i < Math.max(A.length, B.length); i++) {
+                        if ((A[i] || 0) > (B[i] || 0)) return true;
+                        if ((A[i] || 0) < (B[i] || 0)) return false;
+                    }
+                    return false;
+                };
+
+                const relevant = blocks.filter(b => isNewer(b.version, fromVer) && !isNewer(b.version, toVer));
+
+                // --- IMPORTANT: give buckets an explicit type so they’re not inferred as never[] ---
+                const buckets: { added: string[]; improved: string[]; fixed: string[]; other: string[] } =
+                    { added: [], improved: [], fixed: [], other: [] };
+
+                for (const b of relevant) {
+                    for (const it of b.items) {
+                        const low = it.toLowerCase();
+                        const tag = `${it} (v${b.version})`;
+                        if (low.includes("fix")) buckets.fixed.push(tag);
+                        else if (low.includes("add") || low.includes("initial")) buckets.added.push(tag);
+                        else if (low.includes("improv") || low.includes("updat")) buckets.improved.push(tag);
+                        else buckets.other.push(tag);
+                    }
+                }
+
+                const changes: Array<{ title: string; type?: "fixed"|"added"|"progress"|"improved"; items: string[] }> = [];
+                if (buckets.added.length)    changes.push({ title: "New Features", type: "added",    items: buckets.added });
+                if (buckets.improved.length) changes.push({ title: "Improvements", type: "improved", items: buckets.improved });
+                if (buckets.fixed.length)    changes.push({ title: "Bug Fixes",    type: "fixed",    items: buckets.fixed });
+                if (buckets.other.length)    changes.push({ title: "Other Changes",type: "progress", items: buckets.other });
+
+                openModal(changes);
+            } catch {
+                // silent — changelog is non-critical
+            }
+        })();
+    }
+}
+
+
+
 /** Soft hot-reload a single Generated BD plugin from disk (fallbacks handled by caller). */
 async function softReloadBDPlugin(p: AssembledBetterDiscordPlugin) {
     const fs = (window as any).require?.("fs");
@@ -132,10 +302,21 @@ async function softReloadBDPlugin(p: AssembledBetterDiscordPlugin) {
     delete Vencord.Plugins.plugins[p.name];
 
     // Load new code + reconvert + re-add (this will re-push to GeneratedPlugins and auto-start if enabled)
+    const oldVer = (p as any)?.version ?? (Vencord.Plugins.plugins[p.name] as any)?.version ?? null;
     const code = fs.readFileSync(fullPath, "utf8");
     const assembled = await convertPlugin(code, (p as any).filename, true, folder);
+    const newVer = (assembled as any)?.version ?? null;
+
     await addCustomPlugin(assembled);
     stampFileSigOnCurrent(p.name);
+
+    // If version changed, queue a compat changelog (only for plugins that provide a changelog URL)
+    if (oldVer && newVer && oldVer !== newVer) {
+        pendingChangelogs.set(p.name, { from: oldVer, to: newVer });
+        // Give the plugin a moment to show its own modal first; then try ours if nothing appeared.
+        setTimeout(() => { tryShowCompatChangelog(p.name, oldVer, newVer); }, 800);
+    }
+
 }
 
 /** Returns a simple "file signature" (mtime in ms) for a plugin loaded from disk. */
@@ -741,9 +922,29 @@ export const UIHolder = {
     helper() {
         compat_logger.error(new Error("Not implemented."));
     },
-    showToast(message, toastType = 1) {
-        const { createToast, showToast } = getGlobalApi().Webpack.getModule(x => x.createToast && x.showToast);
-        showToast(createToast(message || "Success !", [0, 1, 2, 3, 4, 5].includes(toastType) ? toastType : 1));
+    showToast(message: string, secondArg: any = 1) {
+        const mod = getGlobalApi().Webpack.getModule(x => x.createToast && x.showToast);
+        if (!mod) return;
+
+        // Normalize BD-style options object -> numeric type code
+        let typeCode = 1; // default
+        if (typeof secondArg === "number") {
+            typeCode = [0, 1, 2, 3, 4, 5].includes(secondArg) ? secondArg : 1;
+        } else if (secondArg && typeof secondArg === "object") {
+            const t = String(secondArg.type || "").toLowerCase();
+            // Very common mappings across Discord builds; adjust if your bundle differs
+            const map: Record<string, number> = {
+                "": 1, info: 1,
+                success: 0,
+                warn: 3, warning: 3,
+                error: 4, danger: 4
+            };
+            typeCode = map[t] ?? 1;
+            // We can support timeout/forceShow here if your mod exposes them.
+            // (Most Discord toasts use global settings; 'timeout' often isn't supported.)
+        }
+
+        mod.showToast(mod.createToast(message || "Success!", typeCode));
     },
     showConfirmationModal(title: string, content: any, settings: any = {}) {
         const Colors = {
@@ -848,20 +1049,122 @@ export const UIHolder = {
     showNotice(content, options) {
         return this.showNotice_("Notice", content, options);
     },
-    createTooltip(attachTo, content, opts) {
-        return {
-            label: "",
-            show() {
-                compat_logger.warn("Remind davil to implement tooltip grrr!");
-                return null;
-            },
-            hide() {
-                return this.show();
+    createTooltip(attachTo: HTMLElement, label: string, opts: any = {}) {
+        // KISS defaults from BD docs
+        const options = {
+            style: opts.style ?? "primary",     // primary | info | success | warn | danger
+            side: opts.side ?? "top",           // top | right | bottom | left
+            preventFlip: !!opts.preventFlip,    // simple edge handling
+            disabled: !!opts.disabled
+        };
+
+        // Inject minimal CSS once (use compat DOM helper so styles land in <bd-styles>)
+        getGlobalApi().DOM.addStyle("bd-tooltip-styles", `
+    .bd-tt { position: fixed; z-index: 999999; pointer-events: none; opacity: 0; transform: translateY(-2px); transition: opacity .12s ease, transform .12s ease; }
+    .bd-tt.visible { opacity: 1; transform: translateY(0); }
+    .bd-tt-inner { max-width: 320px; background: #111; color: #fff; font-size: 12px; line-height: 16px; border-radius: 6px; padding: 6px 8px; box-shadow: 0 6px 16px rgba(0,0,0,.4); }
+    .bd-tt.primary  .bd-tt-inner { background: #111; }
+    .bd-tt.info     .bd-tt-inner { background: #2563eb; }
+    .bd-tt.success  .bd-tt-inner { background: #16a34a; }
+    .bd-tt.warn     .bd-tt-inner { background: #d97706; }
+    .bd-tt.danger   .bd-tt-inner { background: #dc2626; }
+        `);
+
+        // Create tooltip DOM
+        const tooltip = document.createElement("div");
+        tooltip.className = `bd-tt ${options.style}`;
+        const labelEl = document.createElement("div");
+        labelEl.className = "bd-tt-inner";
+        labelEl.textContent = label ?? "";
+        tooltip.appendChild(labelEl);
+
+        // Helpers
+        const place = (side: string) => {
+            const r = attachTo.getBoundingClientRect();
+            const tt = tooltip.getBoundingClientRect();
+            const margin = 8;
+            let x = 0, y = 0, usedSide = side;
+
+            const vw = window.innerWidth, vh = window.innerHeight;
+
+            const fitsTop = r.top - margin - tt.height >= 0;
+            const fitsBottom = r.bottom + margin + tt.height <= vh;
+            const fitsLeft = r.left - margin - tt.width >= 0;
+            const fitsRight = r.right + margin + tt.width <= vw;
+
+            // Flip if needed
+            if (options.preventFlip) {
+                usedSide = side;
+            } else {
+                if (side === "top" && !fitsTop) usedSide = fitsBottom ? "bottom" : "top";
+                if (side === "bottom" && !fitsBottom) usedSide = fitsTop ? "top" : "bottom";
+                if (side === "left" && !fitsLeft) usedSide = fitsRight ? "right" : "left";
+                if (side === "right" && !fitsRight) usedSide = fitsLeft ? "left" : "right";
             }
+
+            switch (usedSide) {
+                case "top":
+                    x = r.left + (r.width - tt.width) / 2;
+                    y = r.top - tt.height - margin; break;
+                case "bottom":
+                    x = r.left + (r.width - tt.width) / 2;
+                    y = r.bottom + margin; break;
+                case "left":
+                    x = r.left - tt.width - margin;
+                    y = r.top + (r.height - tt.height) / 2; break;
+                case "right":
+                default:
+                    x = r.right + margin;
+                    y = r.top + (r.height - tt.height) / 2; break;
+            }
+
+            // Clamp into viewport
+            x = Math.max(4, Math.min(x, vw - tt.width - 4));
+            y = Math.max(4, Math.min(y, vh - tt.height - 4));
+
+            tooltip.style.left = `${x}px`;
+            tooltip.style.top = `${y}px`;
+        };
+
+        let visible = false;
+        const show = () => {
+            if (!document.body.contains(tooltip)) document.body.appendChild(tooltip);
+            tooltip.classList.add("visible");
+            place(options.side);
+            visible = true;
+        };
+        const hide = () => {
+            tooltip.classList.remove("visible");
+            visible = false;
+        };
+        const destroy = () => {
+            hide();
+            tooltip.remove();
+            attachTo.removeEventListener("mouseenter", onEnter);
+            attachTo.removeEventListener("mouseleave", onLeave);
+            attachTo.removeEventListener("mousemove", onMove);
+        };
+
+        const onEnter = () => !options.disabled && show();
+        const onLeave = () => hide();
+        const onMove = () => { if (visible) place(options.side); };
+
+        if (!options.disabled) {
+            attachTo.addEventListener("mouseenter", onEnter);
+            attachTo.addEventListener("mouseleave", onLeave);
+            attachTo.addEventListener("mousemove", onMove);
+        }
+
+        return {
+            element: tooltip,
+            labelElement: labelEl,
+            tooltipElement: tooltip,
+            show, hide, destroy
         };
     },
-    showChangelogModal() {
-        compat_logger.warn("Remind davil to implement changelog modal grrr!");
+
+    showChangelogModal(options) {
+        return _showChangelogModal(options);
     },
     buildSettingsPanel(options: { settings: SettingsType[], onChange: CallableFunction; }) {
         const settings: React.ReactNode[] = [];
