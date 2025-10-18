@@ -30,6 +30,10 @@
  * - Fixed Logger getter to return function reference instead of calling it
  * - Commented code cleanup
  * - Fixed waitForModule to respect defaultExport option and wrap bare function exports like BD
+ *  - 2025-10-18 (Pharaoh2k)
+ *    - Webpack.waitForModule: change abort handling to resolve quietly on AbortSignal and ignore late arrivals; prevents “Uncaught (in promise) Error: Aborted” during plugin stop/update flows.
+ *    - BdApi.Plugins: added enable/disable/toggle. Implement reload with soft hot-swap and fallbacks (reload all BD plugins -> page reload).
+ *    - Cleanup: ensure Patcher.unpatchAll(name) and DOM.removeStyle(name) on disable/reload.
 */
 
 /* eslint-disable eqeqeq */
@@ -46,7 +50,7 @@ import { KeybindSettingComponent } from "./components/KeybindSetting";
 import { RadioSettingComponent } from "./components/RadioSetting";
 import { PLUGIN_NAME } from "./constants";
 import { fetchWithCorsProxyFallback } from "./fakeStuff";
-import { AssembledBetterDiscordPlugin } from "./pluginConstructor";
+import { AssembledBetterDiscordPlugin, addCustomPlugin, convertPlugin } from "./pluginConstructor";
 import { getModule as BdApi_getModule, monkeyPatch as BdApi_monkeyPatch, Patcher, ReactUtils_filler } from "./stuffFromBD";
 import { addLogger, compat_logger, createTextForm, docCreateElement, ObjectMerger } from "./utils";
 
@@ -82,27 +86,200 @@ class PatcherWrapper {
     }
 }
 
+// --- BdCompat: helpers for BdApi.Plugins ------------------------------------
+
+/** Resolve a BD plugin by name/originalName/id/filename across Generated & queued plugins. */
+function resolvePluginByAny(idOrFile: string): AssembledBetterDiscordPlugin | undefined {
+    const all = [
+        ...(window as any).GeneratedPlugins ?? [],
+        ...((window as any).BdCompatLayer?.queuedPlugins ?? [])
+    ] as AssembledBetterDiscordPlugin[];
+
+    return all.find(p =>
+        p?.name === idOrFile ||
+        (p as any)?.originalName === idOrFile ||
+        (p as any)?.id === idOrFile ||
+        (p as any)?.filename === idOrFile
+    );
+}
+
+/** Stop plugin safely and clean patches/styles. */
+function safeStopPlugin(name: string) {
+    try { Vencord.Plugins.stopPlugin(Vencord.Plugins.plugins[name]); } catch { }
+    try { getGlobalApi().Patcher.unpatchAll(name); } catch { }
+    try { getGlobalApi().DOM.removeStyle(name); } catch { }
+}
+
+/** Soft hot-reload a single Generated BD plugin from disk (fallbacks handled by caller). */
+async function softReloadBDPlugin(p: AssembledBetterDiscordPlugin) {
+    const fs = (window as any).require?.("fs");
+    if (!fs || !(p as any).filename) throw new Error("no-fs-or-filename");
+
+    const folder = getGlobalApi().Plugins.folder;
+    const fullPath = `${folder}/${(p as any).filename}`;
+
+    const wasEnabled = Vencord.Plugins.isPluginEnabled(p.name);
+    // Remember status in compat settings so addCustomPlugin will auto-start it again
+    Vencord.Settings.plugins["BD Compatibility Layer"].pluginsStatus[p.name] = wasEnabled;
+
+    // Stop & cleanup
+    safeStopPlugin(p.name);
+
+    // Detach from registries
+    const inst = Vencord.Plugins.plugins[p.name];
+    const idx = (window as any).GeneratedPlugins?.indexOf?.(inst);
+    if (typeof idx === "number" && idx > -1) (window as any).GeneratedPlugins.splice(idx, 1);
+    delete Vencord.Plugins.plugins[p.name];
+
+    // Load new code + reconvert + re-add (this will re-push to GeneratedPlugins and auto-start if enabled)
+    const code = fs.readFileSync(fullPath, "utf8");
+    const assembled = await convertPlugin(code, (p as any).filename, true, folder);
+    await addCustomPlugin(assembled);
+    stampFileSigOnCurrent(p.name);
+}
+
+/** Returns a simple "file signature" (mtime in ms) for a plugin loaded from disk. */
+function getFileSig(p: { filename?: string }) {
+    try {
+        const fs = (window as any).require?.("fs");
+        if (!fs || !p?.filename) return undefined;
+        const folder = getGlobalApi().Plugins.folder;
+        const fullPath = `${folder}/${p.filename}`;
+        return fs.statSync(fullPath).mtimeMs | 0;
+    } catch {
+        return undefined;
+    }
+}
+
+/** Store/refresh the signature on the *current* registered plugin instance. */
+function stampFileSigOnCurrent(name: string) {
+    try {
+        const inst = Vencord.Plugins.plugins[name] as any;
+        if (!inst?.filename) return;
+        inst.__bdFileSig = getFileSig(inst);
+    } catch { }
+}
+
 export const PluginsHolder = {
+    /** Array of all BD (Generated) plugins + queued ones (pre-conversion) */
     getAll: () => {
-        const queuedPlugins = window.BdCompatLayer.queuedPlugins as unknown[];
-        return [...window.GeneratedPlugins, ...queuedPlugins] as AssembledBetterDiscordPlugin[];
-    },
-    isEnabled: name => {
-        return Vencord.Plugins.isPluginEnabled(name);
-    },
-    get: function (name) {
-        return this.getAll().filter(x => x.name == name)[0] ?? this.getAll().filter(x => x.originalName == name)[0];
-    },
-    reload: name => {
-        Vencord.Plugins.stopPlugin(Vencord.Plugins.plugins[name]);
-        Vencord.Plugins.startPlugin(Vencord.Plugins.plugins[name]);
+        const queuedPlugins = (window as any).BdCompatLayer?.queuedPlugins as unknown[] ?? [];
+        return [...(window as any).GeneratedPlugins ?? [], ...queuedPlugins] as AssembledBetterDiscordPlugin[];
     },
 
+    /** True if the plugin is enabled right now */
+    isEnabled: (name: string) => Vencord.Plugins.isPluginEnabled(name),
+
+    /** Get by name (or originalName fallback) */
+    get: function (name: string) {
+        return this.getAll().find(x => (x as any).name === name)
+            ?? this.getAll().find(x => (x as any).originalName === name);
+    },
+
+    /**
+     * Enable the plugin (BD parity).
+     * Also records status in compat settings so re-converts keep the state.
+     */
+    /** Enable the plugin (BD parity) with auto hot-swap-if-updated. */
+    enable: async function (idOrFile: string) {
+        const p = resolvePluginByAny(idOrFile);
+        if (!p) return;
+
+        // Mark enabled *first* so addCustomPlugin auto-starts after soft reload
+        Vencord.Settings.plugins[p.name].enabled = true;
+        Vencord.Settings.plugins["BD Compatibility Layer"].pluginsStatus[p.name] = true;
+
+        // If it’s a Generated BD plugin from disk, check file signature.
+        // If the on-disk file changed since this instance was loaded, do a soft reload.
+        const current = Vencord.Plugins.plugins[p.name] as any;
+        const hadSig = current?.__bdFileSig;
+        const nowSig = getFileSig(current ?? p as any);
+
+        if ((current?.filename && nowSig !== undefined && hadSig !== nowSig) || (!hadSig && nowSig !== undefined)) {
+            try {
+                await softReloadBDPlugin(p);
+                // softReloadBDPlugin + our "enabled=true" above will auto-start it.
+                return;
+            } catch (e) {
+                console.warn("[BdCompat] enable(): soft reload failed, starting old instance", e);
+            }
+        }
+
+        // No file change (or reload failed): just start the existing instance.
+        try {
+            Vencord.Plugins.startPlugin(Vencord.Plugins.plugins[p.name]);
+            // Ensure signature is stamped at least once
+            stampFileSigOnCurrent(p.name);
+        } catch { }
+    },
+
+    /** Disable the plugin (BD parity). */
+    disable: function (idOrFile: string) {
+        const p = resolvePluginByAny(idOrFile);
+        if (!p) return;
+
+        Vencord.Settings.plugins[p.name].enabled = false;
+        Vencord.Settings.plugins["BD Compatibility Layer"].pluginsStatus[p.name] = false;
+        safeStopPlugin(p.name);
+    },
+
+    /** Toggle enablement (BD parity). */
+    toggle: function (idOrFile: string) {
+        const p = resolvePluginByAny(idOrFile);
+        if (!p) return;
+        return this.isEnabled(p.name) ? this.disable(p.name) : this.enable(p.name);
+    },
+
+    /**
+     * Reload a single plugin if possible (BD parity: “Reloads if a particular addon is enabled”).
+     * Strategy:
+     *  1) Soft hot-reload from disk (Generated BD plugins);
+     *  2) Fallback: reload all BD plugins (no full client restart);
+     *  3) Last resort: ask the page to reload.
+     */
+    reload: async function (idOrFile: string) {
+        const p = resolvePluginByAny(idOrFile);
+
+        // Try soft per-plugin reload if we have a filename (Generated BD plugin from disk)
+        if (p && (p as any).filename) {
+            try {
+                await softReloadBDPlugin(p);
+                return;
+            } catch (e) {
+                console.warn("[BdCompat] Soft reload failed for", p?.name, e);
+            }
+        }
+
+        // Fallback A: restartless “Reload all BD plugins”
+        try {
+            await (window as any).BdCompatLayer?.reloadCompatLayer?.();
+            return;
+        } catch (e) {
+            console.warn("[BdCompat] reloadCompatLayer failed", e);
+        }
+
+        // Fallback B: page reload; only if environment allows it
+        try { location.reload(); } catch { }
+    },
+
+    /** BD’s API exposes the addon folder path; keep existing behavior. */
     rootFolder: "/BD",
     get folder() {
         return this.rootFolder + "/plugins";
     },
+
+    // --- Non-BD, but helpful for compatibility with some plugins: aliases ---
+    /** Some plugins call BdApi.Plugins.start/stop; map them to enable/disable. */
+    start: function (idOrFile: string) {
+        console.warn("BdApi.Plugins.start is deprecated; using enable().");
+        return this.enable(idOrFile);
+    },
+    stop: function (idOrFile: string) {
+        console.warn("BdApi.Plugins.stop is deprecated; using disable().");
+        return this.disable(idOrFile);
+    },
 };
+
 
 const getOptions = (args: any[], defaultOptions = {}) => {
     const lastArg = args[args.length - 1];
@@ -181,7 +358,7 @@ export const WebpackHolder = {
         return BdApi_getModule(...args);
     },
     getMangled<T extends object>(filter: any, mappers: Record<keyof T, Function>, options: any = {}): T {
-        const {raw = false, ...rest} = options;
+        const { raw = false, ...rest } = options;
 
         // Convert string/regex to bySource filter like BD does
         if (typeof filter === "string" || filter instanceof RegExp) {
@@ -189,7 +366,7 @@ export const WebpackHolder = {
         }
 
         // Get the module using the filter
-        let module = this.getModule(filter, {raw, ...rest});
+        let module = this.getModule(filter, { raw, ...rest });
         if (!module) return {} as T;
         if (raw) module = module.exports;
 
@@ -257,32 +434,34 @@ export const WebpackHolder = {
     waitForModule(filter, options: any = {}) {
         const { defaultExport = true, searchExports = false, searchDefault = true, raw = false, signal } = options;
 
-        return new Promise((resolve, reject) => {
-            // Handle abort signal
-            if (signal && signal.aborted) {
-                reject(new Error("Aborted"));
-                return;
-            }
+        return new Promise((resolve) => {
+            let aborted = false;
 
-            const abortHandler = signal ? () => {
-                reject(new Error("Aborted"));
-            } : null;
+            const onAbort = () => {
+                aborted = true;
+                try { signal?.removeEventListener("abort", onAbort as any); } catch { }
+                // Quiet-cancel: resolve undefined instead of rejecting,
+                // so callers that don't .catch() won't throw noisy errors.
+                resolve(undefined as any);
+            };
 
+            // Handle abort at subscription time
             if (signal) {
-                signal.addEventListener("abort", abortHandler);
+                if (signal.aborted) return onAbort();
+                signal.addEventListener("abort", onAbort as any, { once: true });
             }
 
             // First check if module already exists
             const existingModule = this.getModule(filter, options);
             if (existingModule) {
-                if (signal) signal.removeEventListener("abort", abortHandler);
-                resolve(existingModule);
-                return;
+                try { signal?.removeEventListener("abort", onAbort as any); } catch { }
+                return resolve(existingModule);
             }
 
             // Wait for module to load
             Vencord.Webpack.waitFor(filter, (foundModule) => {
-                if (signal) signal.removeEventListener("abort", abortHandler);
+                try { signal?.removeEventListener("abort", onAbort as any); } catch { }
+                if (aborted) return; // ignore late arrivals after abort
 
                 // Apply the same logic as getModule for handling the result
                 let result = foundModule;
@@ -291,8 +470,8 @@ export const WebpackHolder = {
                 if (!defaultExport && typeof foundModule === 'function') {
                     const wrapper = Object.create(null);
                     Object.defineProperties(wrapper, {
-                        Z:       { value: foundModule, enumerable: true },
-                        ZP:      { value: foundModule, enumerable: true },
+                        Z: { value: foundModule, enumerable: true },
+                        ZP: { value: foundModule, enumerable: true },
                         default: { value: foundModule, enumerable: true }
                     });
                     result = wrapper;
