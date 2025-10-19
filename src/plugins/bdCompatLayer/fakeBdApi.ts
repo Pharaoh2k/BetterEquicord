@@ -51,7 +51,6 @@ import { OptionType, PluginOptionBase, PluginOptionComponent, PluginOptionCustom
 import { Forms, lodash, Text } from "@webpack/common";
 
 // type-only import to pull in the augmentation (erased at runtime)
-// eslint-disable-next-line import/no-unassigned-import
 import "./types/bdapi-ui-augment";
 
 import { ColorPickerSettingComponent } from "./components/ColorPickerSetting";
