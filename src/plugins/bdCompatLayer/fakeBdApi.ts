@@ -47,9 +47,11 @@ import { Settings } from "@api/Settings";
 const VenComponents = OptionComponentMap;
 
 import { OptionComponentMap } from "@components/settings/tabs/plugins/components";
-import { ModalAPI } from "@utils/modal";
 import { OptionType, PluginOptionBase, PluginOptionComponent, PluginOptionCustom, PluginOptionSelect, PluginOptionSlider } from "@utils/types";
 import { Forms, lodash, Text } from "@webpack/common";
+
+// type-only import to pull in the augmentation (erased at runtime)
+import "./types/bdapi-ui-augment";
 
 import { ColorPickerSettingComponent } from "./components/ColorPickerSetting";
 import { KeybindSettingComponent } from "./components/KeybindSetting";
@@ -183,7 +185,7 @@ function tryShowCompatChangelog(name: string, fromVer: string, toVer: string) {
     if (!instance) return;
 
     // Helper: open modal if we have data (BD API shape)
-    const openModal = (changes: Array<{ title: string; type?: "fixed"|"added"|"progress"|"improved"; items: string[] }>) => {
+    const openModal = (changes: Array<{ title: string; type?: "fixed" | "added" | "progress" | "improved"; items: string[] }>) => {
         if (!Array.isArray(changes) || changes.length === 0) return;
         getGlobalApi().UI.showChangelogModal({
             title: name,
@@ -264,11 +266,11 @@ function tryShowCompatChangelog(name: string, fromVer: string, toVer: string) {
                     }
                 }
 
-                const changes: Array<{ title: string; type?: "fixed"|"added"|"progress"|"improved"; items: string[] }> = [];
-                if (buckets.added.length)    changes.push({ title: "New Features", type: "added",    items: buckets.added });
+                const changes: Array<{ title: string; type?: "fixed" | "added" | "progress" | "improved"; items: string[] }> = [];
+                if (buckets.added.length) changes.push({ title: "New Features", type: "added", items: buckets.added });
                 if (buckets.improved.length) changes.push({ title: "Improvements", type: "improved", items: buckets.improved });
-                if (buckets.fixed.length)    changes.push({ title: "Bug Fixes",    type: "fixed",    items: buckets.fixed });
-                if (buckets.other.length)    changes.push({ title: "Other Changes",type: "progress", items: buckets.other });
+                if (buckets.fixed.length) changes.push({ title: "Bug Fixes", type: "fixed", items: buckets.fixed });
+                if (buckets.other.length) changes.push({ title: "Other Changes", type: "progress", items: buckets.other });
 
                 openModal(changes);
             } catch {
@@ -915,6 +917,187 @@ type SettingsType = {
 
 const _ReactDOM_With_createRoot = {} as typeof Vencord.Webpack.Common.ReactDOM & { createRoot: typeof Vencord.Webpack.Common.createRoot; };
 
+// === BD-compat Confirmation Modal (self-contained) =========================
+// Uses BdApi.React & BdApi.ReactDOM (from getGlobalApi()) and BD/Discord CSS vars.
+
+// Unique style id & simple registry
+const BD_CM_STYLE_ID = "bd-confirmation-styles";
+type BdCmRecord = { root: any; host: HTMLElement; onClose?: () => void };
+const BD_CM_REGISTRY = new Map<string, BdCmRecord>();
+
+// Inject styles once via the compat DOM helper so they live under <bd-styles>
+function BD_CM_ensureStyles() {
+    getGlobalApi().DOM.addStyle(BD_CM_STYLE_ID, `
+/* Backdrop */
+.bd-cm-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:999998;opacity:0;animation:bd-cm-fade-in .12s ease forwards}
+@keyframes bd-cm-fade-in{to{opacity:1}}
+/* Layer */
+.bd-cm-layer{position:fixed;inset:0;z-index:999999;display:grid;place-items:center;pointer-events:none}
+/* Card */
+.bd-cm-root{pointer-events:auto;width:min(520px,calc(100vw - 24px));max-height:calc(100vh - 24px);
+ background:var(--modal-background);color:var(--text-default);border-radius:var(--radius-md);
+ border:1px solid var(--border-normal);box-shadow:0 16px 40px rgba(0,0,0,.4),0 4px 12px rgba(0,0,0,.2);
+ transform:translateY(8px) scale(.985);opacity:0;animation:bd-cm-pop .15s ease forwards;display:flex;flex-direction:column;font-family:var(--font-primary,inherit)}
+@keyframes bd-cm-pop{to{transform:translateY(0) scale(1);opacity:1}}
+.bd-cm-header{padding:16px}
+.bd-cm-title{margin:0;font-size:20px;line-height:24px;font-weight:700;color:var(--header-primary,var(--text-default))}
+.bd-cm-body{padding:12px 16px 0 16px;overflow:auto;max-height:calc(100vh - 220px);font-size:16px;line-height:20px;color:var(--text-default)}
+.bd-cm-footer{padding:12px 16px 16px;background:var(--modal-footer-background,transparent);border-top:1px solid var(--border-normal);display:flex;gap:8px;justify-content:flex-end}
+.bd-cm-btn{appearance:none;border:0;border-radius:6px;padding:8px 12px;font-weight:600;cursor:pointer;transition:filter .12s ease,transform .12s ease,opacity .12s ease,background-color .12s ease,color .12s ease;font-family:var(--font-primary,inherit)}
+.bd-cm-btn.secondary{background:transparent;color:var(--interactive-normal);border:1px solid var(--border-normal)}
+.bd-cm-btn.secondary:hover{color:var(--interactive-hover)}
+.bd-cm-btn.primary{background:var(--brand-500);color:var(--white-500,#fff)}
+.bd-cm-btn.primary:hover{filter:brightness(1.05)}
+.bd-cm-btn.primary:active{transform:translateY(1px)}
+.bd-cm-btn.danger{background:var(--status-danger);color:var(--white-500,#fff)}
+.bd-cm-btn[disabled]{opacity:.6;cursor:default}
+`);
+}
+
+function BD_CM_genKey() {
+    return `cm_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+function BD_CM_isTextEntry(el: Element | null): boolean {
+    if (!el) return false;
+    const tag = el.tagName?.toLowerCase();
+    if (tag === "textarea") return true;
+    if (tag === "input") {
+        const type = (el as HTMLInputElement).type?.toLowerCase();
+        return !["button", "checkbox", "radio", "submit", "reset", "color", "file", "range"].includes(type);
+    }
+    return (el as HTMLElement).isContentEditable === true;
+}
+
+// Functional inner component (no JSX)
+function BD_CM_Inner(props: {
+    title: string;
+    content: any; // string | ReactNode | Array<...>
+    danger?: boolean;
+    confirmText?: string | null;
+    cancelText?: string | null; // null hides cancel button (for BdApi.UI.alert)
+    onConfirm?: () => void | Promise<void>;
+    onCancel?: () => void | Promise<void>;
+    onRequestClose: (reason: "confirm" | "cancel" | "close") => void;
+}) {
+    const R = getGlobalApi().React;
+    const [busy, setBusy] = R.useState(false);
+    const confirmRef = R.useRef<HTMLButtonElement | null>(null);
+
+    const doConfirm = R.useCallback(async () => {
+        if (busy) return;
+        try { setBusy(true); await props.onConfirm?.(); props.onRequestClose("confirm"); }
+        catch { /* keep open if handler throws */ }
+        finally { setBusy(false); }
+    }, [busy, props.onConfirm, props.onRequestClose]);
+
+    const doCancel = R.useCallback(async () => {
+        if (busy) return;
+        try { setBusy(true); await props.onCancel?.(); }
+        finally { setBusy(false); props.onRequestClose("cancel"); }
+    }, [busy, props.onCancel, props.onRequestClose]);
+
+    R.useEffect(() => {
+        const onKey = (e: KeyboardEvent) => {
+            if (e.key === "Escape") { e.stopPropagation(); doCancel(); return; }
+            if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+                if (BD_CM_isTextEntry(document.activeElement)) return;
+                e.preventDefault(); doConfirm();
+            }
+        };
+        window.addEventListener("keydown", onKey, true);
+        const t = setTimeout(() => { try { (confirmRef.current as any)?.focus?.(); } catch { } }, 0);
+        return () => { window.removeEventListener("keydown", onKey, true); clearTimeout(t); };
+    }, [doCancel, doConfirm]);
+
+    const REl = R.createElement;
+    const contentNodes = Array.isArray(props.content) ? props.content : [props.content];
+
+    return R.createElement(R.Fragment, null,
+        REl("div", { className: "bd-cm-backdrop", onClick: doCancel }),
+        REl("div", { className: "bd-cm-layer", role: "dialog", "aria-modal": "true", "aria-label": "Confirmation dialog" },
+            REl("div", { className: "bd-cm-root", onClick: (e: MouseEvent) => e.stopPropagation() as any },
+                REl("header", { className: "bd-cm-header" },
+                    REl("h3", { className: "bd-cm-title" }, props.title)
+                ),
+                REl("div", { className: "bd-cm-body" },
+                    ...contentNodes.map((n, i) => REl(R.Fragment, { key: i }, n))
+                ),
+                REl("footer", { className: "bd-cm-footer" },
+                    props.cancelText === null ? null :
+                        REl("button", {
+                            className: "bd-cm-btn secondary",
+                            onClick: doCancel,
+                            disabled: busy,
+                            "aria-label": props.cancelText ?? "Cancel"
+                        }, props.cancelText ?? "Cancel"),
+                    REl("button", {
+                        ref: confirmRef as any,
+                        className: `bd-cm-btn ${props.danger ? "danger" : "primary"}`,
+                        onClick: doConfirm,
+                        disabled: busy,
+                        "aria-label": props.confirmText ?? "Okay"
+                    }, props.confirmText ?? "Okay")
+                )
+            )
+        )
+    );
+}
+
+// Open/close helpers exposed to UIHolder
+function BD_CM_open(
+    title: string,
+    content: any,
+    options: {
+        danger?: boolean;
+        confirmText?: string;
+        cancelText?: string | null;
+        onConfirm?: () => void | Promise<void>;
+        onCancel?: () => void | Promise<void>;
+        onClose?: () => void;
+    } = {}
+): string {
+    BD_CM_ensureStyles();
+
+    const host = document.createElement("div");
+    host.className = "bd-cm-host";
+    document.body.appendChild(host);
+
+    const key = BD_CM_genKey();
+    const root = getGlobalApi().ReactDOM.createRoot(host);
+
+    const onRequestClose = (_reason: "confirm" | "cancel" | "close") => BD_CM_close(key);
+
+    BD_CM_REGISTRY.set(key, { root, host, onClose: options.onClose });
+
+    root.render(getGlobalApi().React.createElement(BD_CM_Inner, {
+        title,
+        content,
+        danger: !!options.danger,
+        confirmText: options.confirmText,
+        cancelText: options.cancelText ?? "Cancel",
+        onConfirm: options.onConfirm,
+        onCancel: options.onCancel,
+        onRequestClose
+    }));
+
+    return key; // BD docs say this returns a unique modal id/key
+}
+
+function BD_CM_close(key: string) {
+    const rec = BD_CM_REGISTRY.get(key);
+    if (!rec) return;
+    try { rec.root?.unmount?.(); } finally {
+        try { rec.host.remove(); } catch { }
+        try { rec.onClose?.(); } catch { }
+        BD_CM_REGISTRY.delete(key);
+    }
+}
+function BD_CM_closeAll() {
+    for (const k of Array.from(BD_CM_REGISTRY.keys())) BD_CM_close(k);
+}
+// ========================================================================
+
+
 export const UIHolder = {
     alert(title: string, content: any) {
         return this.showConfirmationModal(title, content, { cancelText: null });
@@ -947,47 +1130,14 @@ export const UIHolder = {
         mod.showToast(mod.createToast(message || "Success!", typeCode));
     },
     showConfirmationModal(title: string, content: any, settings: any = {}) {
-        const Colors = {
-            BRAND: getGlobalApi().findModuleByProps("colorBrand").colorBrand
-        };
-        const ConfirmationModal = getGlobalApi().Webpack.getModule(x => x.ConfirmModal).ConfirmModal;
-        const { openModal } = ModalAPI;
-
-        const {
-            confirmText = settings.confirmText || "Confirm",
-            cancelText = settings.cancelText || "Cancel",
-            onConfirm = settings.onConfirm || (() => { }),
-            onCancel = settings.onCancel || (() => { }),
-            extraReact = settings.extraReact || [],
-            danger = settings.danger || false,
-        } = settings;
-
-        const moreReact: React.ReactElement[] = [];
-
-        const textStyle = {
-            color: "var(--text-default)",
-        };
-
-        const { React } = getGlobalApi();
-        const textContent = React.createElement("div", { style: textStyle }, content);
-
-        moreReact.push(textContent);
-
-        extraReact.forEach(reactElement => {
-            moreReact.push(reactElement);
-        });
-
-        openModal(props => React.createElement(ConfirmationModal, Object.assign({
-            header: title,
-            confirmButtonColor: danger ? Vencord.Webpack.Common.Button.Colors.RED : Colors.BRAND,
-            confirmText: confirmText,
-            cancelText: cancelText,
-            onConfirm: onConfirm,
-            onCancel: onCancel,
-            children: moreReact,
-            ...props
-        })));
+        // BD-compatible: returns a string key, honors danger/confirmText/cancelText,
+        // overlay/Esc cancel, Enter confirms (not in text fields).
+        return BD_CM_open(title, content, settings);
     },
+    // Optional helpers (handy for programmatic closing)
+    closeConfirmationModal(key: string) { BD_CM_close(key); },
+    closeAllConfirmationModals() { BD_CM_closeAll(); },
+
     showNotice_(title, content, options: any = {}) {
         const container = document.createElement("div");
         container.className = "custom-notification-container";
@@ -1732,7 +1882,7 @@ class BdApiReImplementationInstance {
         UIHolder.showNotice(content, settings);
     }
     showConfirmationModal(title, content, settings = {}) {
-        UIHolder.showConfirmationModal(title, content, settings);
+        return UIHolder.showConfirmationModal(title, content, settings);
     }
     get injectCSS() {
         return DOMHolder.addStyle.bind(DOMHolder);
