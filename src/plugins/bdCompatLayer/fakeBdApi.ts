@@ -40,28 +40,30 @@
  *    - UI.createTooltip: implement lightweight tooltip with CSS injection, viewport clamping, and smart side flipping.
  *    - UI.showToast: accept BD-style options object or type strings (info/success/warn/error), map to codes, and guard if module missing.
  *    - Plugins: when enable/reload detects version change, queue compat changelog display (falls back silently if unavailable).
+ *  - 2025-10-31: feat(components): add BdApi.Components.ErrorBoundary (BD parity) — supports id/name/hideError/fallback/onError, logs with clickable fallback to open DevTools, and guards render override; fixes ChannelsPreview React #130 crash when component was missing.
+
 */
 
-/* eslint-disable eqeqeq */
+
 import { Settings } from "@api/Settings";
 const VenComponents = OptionComponentMap;
+
+// type-only import to pull in the augmentation (erased at runtime)
+import "./types/bdapi-ui-augment";
 
 import { OptionComponentMap } from "@components/settings/tabs/plugins/components";
 import { OptionType, PluginOptionBase, PluginOptionComponent, PluginOptionCustom, PluginOptionSelect, PluginOptionSlider } from "@utils/types";
 import { Forms, lodash, Text } from "@webpack/common";
-
-// type-only import to pull in the augmentation (erased at runtime)
-import "./types/bdapi-ui-augment";
 
 import { ColorPickerSettingComponent } from "./components/ColorPickerSetting";
 import { KeybindSettingComponent } from "./components/KeybindSetting";
 import { RadioSettingComponent } from "./components/RadioSetting";
 import { PLUGIN_NAME } from "./constants";
 import { fetchWithCorsProxyFallback } from "./fakeStuff";
-import { AssembledBetterDiscordPlugin, addCustomPlugin, convertPlugin } from "./pluginConstructor";
+import { addCustomPlugin, AssembledBetterDiscordPlugin, convertPlugin } from "./pluginConstructor";
 import { getModule as BdApi_getModule, monkeyPatch as BdApi_monkeyPatch, Patcher, ReactUtils_filler } from "./stuffFromBD";
-import { addLogger, compat_logger, createTextForm, docCreateElement, ObjectMerger } from "./utils";
 import { showChangelogModal as _showChangelogModal } from "./ui/changelog";
+import { addLogger, compat_logger, createTextForm, docCreateElement, ObjectMerger } from "./utils";
 
 class PatcherWrapper {
     #label;
@@ -120,7 +122,7 @@ function safeStopPlugin(name: string) {
 }
 
 // --- BdCompat: pending changelog (for plugins that call writeFile + BdApi.Plugins.reload) ---
-const pendingChangelogs = new Map<string, { from: string; to: string }>();
+const pendingChangelogs = new Map<string, { from: string; to: string; }>();
 
 function vcIsNewer(v1: string, v2: string) {
     const [a, b] = [v1, v2].map(v => v.split(".").map(Number));
@@ -134,7 +136,7 @@ function vcIsNewer(v1: string, v2: string) {
 // Very small, BD-style parser: headings "### 1.2.3" + bullet lines "- foo"
 function vcParseChangelog(md: string, from: string, to: string) {
     const lines = md.split("\n");
-    const versions: { version: string; items: string[] }[] = [];
+    const versions: { version: string; items: string[]; }[] = [];
     let curVer: string | null = null;
     let items: string[] = [];
 
@@ -165,7 +167,7 @@ function vcParseChangelog(md: string, from: string, to: string) {
         }
     }
 
-    const result: Array<{ title: string; type?: "fixed" | "added" | "progress" | "improved"; items: string[] }> = [];
+    const result: Array<{ title: string; type?: "fixed" | "added" | "progress" | "improved"; items: string[]; }> = [];
     if (grouped.added.length) result.push({ title: "New Features", type: "added", items: grouped.added });
     if (grouped.improved.length) result.push({ title: "Improvements", type: "improved", items: grouped.improved });
     if (grouped.fixed.length) result.push({ title: "Fixes", type: "fixed", items: grouped.fixed });
@@ -185,7 +187,7 @@ function tryShowCompatChangelog(name: string, fromVer: string, toVer: string) {
     if (!instance) return;
 
     // Helper: open modal if we have data (BD API shape)
-    const openModal = (changes: Array<{ title: string; type?: "fixed" | "added" | "progress" | "improved"; items: string[] }>) => {
+    const openModal = (changes: Array<{ title: string; type?: "fixed" | "added" | "progress" | "improved"; items: string[]; }>) => {
         if (!Array.isArray(changes) || changes.length === 0) return;
         getGlobalApi().UI.showChangelogModal({
             title: name,
@@ -225,8 +227,8 @@ function tryShowCompatChangelog(name: string, fromVer: string, toVer: string) {
 
                 // Tiny generic parser: "### 1.2.3" headings + "- change" bullets
                 const lines = md.split("\n");
-                const blocks: { version: string; items: string[] }[] = [];
-                let cur: { version: string; items: string[] } | null = null;
+                const blocks: { version: string; items: string[]; }[] = [];
+                let cur: { version: string; items: string[]; } | null = null;
 
                 for (const line of lines) {
                     const ver = line.match(/^###\s+([\d.]+)/)?.[1];
@@ -252,7 +254,7 @@ function tryShowCompatChangelog(name: string, fromVer: string, toVer: string) {
                 const relevant = blocks.filter(b => isNewer(b.version, fromVer) && !isNewer(b.version, toVer));
 
                 // --- IMPORTANT: give buckets an explicit type so they’re not inferred as never[] ---
-                const buckets: { added: string[]; improved: string[]; fixed: string[]; other: string[] } =
+                const buckets: { added: string[]; improved: string[]; fixed: string[]; other: string[]; } =
                     { added: [], improved: [], fixed: [], other: [] };
 
                 for (const b of relevant) {
@@ -266,7 +268,7 @@ function tryShowCompatChangelog(name: string, fromVer: string, toVer: string) {
                     }
                 }
 
-                const changes: Array<{ title: string; type?: "fixed" | "added" | "progress" | "improved"; items: string[] }> = [];
+                const changes: Array<{ title: string; type?: "fixed" | "added" | "progress" | "improved"; items: string[]; }> = [];
                 if (buckets.added.length) changes.push({ title: "New Features", type: "added", items: buckets.added });
                 if (buckets.improved.length) changes.push({ title: "Improvements", type: "improved", items: buckets.improved });
                 if (buckets.fixed.length) changes.push({ title: "Bug Fixes", type: "fixed", items: buckets.fixed });
@@ -287,7 +289,7 @@ async function softReloadBDPlugin(p: AssembledBetterDiscordPlugin) {
     const fs = (window as any).require?.("fs");
     if (!fs || !(p as any).filename) throw new Error("no-fs-or-filename");
 
-    const folder = getGlobalApi().Plugins.folder;
+    const { folder } = getGlobalApi().Plugins;
     const fullPath = `${folder}/${(p as any).filename}`;
 
     const wasEnabled = Vencord.Plugins.isPluginEnabled(p.name);
@@ -322,11 +324,11 @@ async function softReloadBDPlugin(p: AssembledBetterDiscordPlugin) {
 }
 
 /** Returns a simple "file signature" (mtime in ms) for a plugin loaded from disk. */
-function getFileSig(p: { filename?: string }) {
+function getFileSig(p: { filename?: string; }) {
     try {
         const fs = (window as any).require?.("fs");
         if (!fs || !p?.filename) return undefined;
-        const folder = getGlobalApi().Plugins.folder;
+        const { folder } = getGlobalApi().Plugins;
         const fullPath = `${folder}/${p.filename}`;
         return fs.statSync(fullPath).mtimeMs | 0;
     } catch {
@@ -617,7 +619,7 @@ export const WebpackHolder = {
     waitForModule(filter, options: any = {}) {
         const { defaultExport = true, searchExports = false, searchDefault = true, raw = false, signal } = options;
 
-        return new Promise((resolve) => {
+        return new Promise(resolve => {
             let aborted = false;
 
             const onAbort = () => {
@@ -642,7 +644,7 @@ export const WebpackHolder = {
             }
 
             // Wait for module to load
-            Vencord.Webpack.waitFor(filter, (foundModule) => {
+            Vencord.Webpack.waitFor(filter, foundModule => {
                 try { signal?.removeEventListener("abort", onAbort as any); } catch { }
                 if (aborted) return; // ignore late arrivals after abort
 
@@ -650,7 +652,7 @@ export const WebpackHolder = {
                 let result = foundModule;
 
                 // If it's a bare function and defaultExport is false, wrap it
-                if (!defaultExport && typeof foundModule === 'function') {
+                if (!defaultExport && typeof foundModule === "function") {
                     const wrapper = Object.create(null);
                     Object.defineProperties(wrapper, {
                         Z: { value: foundModule, enumerable: true },
@@ -922,7 +924,7 @@ const _ReactDOM_With_createRoot = {} as typeof Vencord.Webpack.Common.ReactDOM &
 
 // Unique style id & simple registry
 const BD_CM_STYLE_ID = "bd-confirmation-styles";
-type BdCmRecord = { root: any; host: HTMLElement; onClose?: () => void };
+type BdCmRecord = { root: any; host: HTMLElement; onClose?: () => void; };
 const BD_CM_REGISTRY = new Map<string, BdCmRecord>();
 
 // Inject styles once via the compat DOM helper so they live under <bd-styles>
@@ -1202,9 +1204,9 @@ export const UIHolder = {
     createTooltip(attachTo: HTMLElement, label: string, opts: any = {}) {
         // KISS defaults from BD docs
         const options = {
-            style: opts.style ?? "primary",     // primary | info | success | warn | danger
-            side: opts.side ?? "top",           // top | right | bottom | left
-            preventFlip: !!opts.preventFlip,    // simple edge handling
+            style: opts.style ?? "primary", // primary | info | success | warn | danger
+            side: opts.side ?? "top", // top | right | bottom | left
+            preventFlip: !!opts.preventFlip, // simple edge handling
             disabled: !!opts.disabled
         };
 
@@ -1718,6 +1720,95 @@ class BdApiReImplementationInstance {
                     props.onChange(v);
                 },
             });
+        },
+        get ErrorBoundary() {
+            // cache so we return a stable class
+            if ((window as any).__bdCompatEB) return (window as any).__bdCompatEB;
+
+            type ErrorBoundaryProps = {
+                id?: string;
+                name?: string;
+                hideError?: boolean;
+                fallback?: any;
+                onError?(e: Error): void;
+                children?: any;
+            };
+
+            const React =
+                (BdApi as any)?.React ??
+                (window as any)?.Vencord?.Webpack?.Common?.React;
+
+            if (!React) {
+                console.warn("[BD-Compat] React not found; ErrorBoundary unavailable.");
+                return undefined;
+            }
+
+            // Minimal IPC->DevTools opener if available (no-ops on web)
+            const openDevTools = () => {
+                try {
+                    (window as any).DiscordNative?.openDevTools?.();
+                } catch { }
+            };
+
+            class ErrorBoundary
+                extends React.Component<ErrorBoundaryProps, { hasError: boolean; }> {
+                constructor(props: ErrorBoundaryProps) {
+                    super(props);
+                    this.state = { hasError: false };
+                }
+
+                componentDidCatch(error: Error, info: any) {
+                    this.setState({ hasError: true });
+                    // Parity: log with name/id, then call optional onError
+                    try {
+                        console.error(
+                            "[BD-Compat ErrorBoundary]",
+                            `{name:${this.props.name ?? "Unknown"}, id:${this.props.id ?? "Unknown"}}`,
+                            error,
+                            info
+                        );
+                    } catch { }
+                    try {
+                        this.props.onError?.(error);
+                    } catch { }
+                }
+
+                render() {
+                    if (this.state.hasError && this.props.fallback) {
+                        return this.props.fallback;
+                    }
+                    if (this.state.hasError && !this.props.hideError) {
+                        return React.createElement(
+                            "div",
+                            {
+                                className: "react-error",
+                                onClick: openDevTools
+                            },
+                            "There was an unexpected Error. Click to open console for more details."
+                        );
+                    }
+                    return this.props.children as any;
+                }
+            }
+
+            // Guard against overriding render (matches BD’s policy warning)
+            const originalRender = ErrorBoundary.prototype.render;
+            Object.defineProperty(ErrorBoundary.prototype, "render", {
+                enumerable: false,
+                configurable: false,
+                set() {
+                    console.warn(
+                        "ErrorBoundary",
+                        "Addon policy for plugins https://docs.betterdiscord.app/plugins/introduction/guidelines#scope"
+                    );
+                },
+                get() {
+                    return originalRender;
+                }
+            });
+
+            (window as any).__bdCompatEB = ErrorBoundary;
+            return ErrorBoundary;
         },
     };
     get React() {
