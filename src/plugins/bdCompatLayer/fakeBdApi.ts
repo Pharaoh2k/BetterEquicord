@@ -40,7 +40,7 @@
  *    - UI.createTooltip: implement lightweight tooltip with CSS injection, viewport clamping, and smart side flipping.
  *    - UI.showToast: accept BD-style options object or type strings (info/success/warn/error), map to codes, and guard if module missing.
  *    - Plugins: when enable/reload detects version change, queue compat changelog display (falls back silently if unavailable).
- *  - 2025-10-31: feat(components): add BdApi.Components.ErrorBoundary (BD parity) — supports id/name/hideError/fallback/onError, logs with clickable fallback to open DevTools, and guards render override; fixes ChannelsPreview React #130 crash when component was missing.
+ *  - 2025-10-31: feat(components): add BdApi.Components.ErrorBoundary (BD parity). Supports id/name/hideError/fallback/onError, logs with clickable fallback to open DevTools, and guards render override; fixes ChannelsPreview React #130 crash when component was missing.
 
 */
 
