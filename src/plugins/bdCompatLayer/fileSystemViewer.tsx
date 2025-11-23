@@ -44,7 +44,8 @@ import { SettingsTab, wrapTab } from "@components/settings/tabs";
 import { ModalRoot, ModalSize, openModal } from "@utils/modal";
 import { Plugin } from "@utils/types";
 // import { Button, Card, Forms, hljs, Parser, React, ScrollerThin, TabBar, Text, TextInput, Tooltip, useEffect, useMemo, useReducer, useRef, useState } from "@webpack/common";
-import { Button, Card, hljs, Parser, React, ScrollerThin, TabBar, Text, TextInput, Tooltip, useEffect, useMemo, useReducer, useRef, useState } from "@webpack/common"; // using Paragraph in Equicord, instead of Forms
+import { Button, hljs, Parser, React, ScrollerThin, TabBar, Text, TextInput, Tooltip, useEffect, useMemo, useReducer, useRef, useState } from "@webpack/common"; // using Paragraph in Equicord, instead of Forms
+import { Card } from "@components/Card";
 
 import { PLUGIN_NAME } from "./constants";
 import { getGlobalApi } from "./fakeBdApi";
