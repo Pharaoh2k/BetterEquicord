@@ -1891,7 +1891,7 @@ function BD_NOTIF_ensureStyles() {
 .bd-notif-close:hover{background:var(--background-modifier-hover);color:var(--interactive-hover)}
 
 /* Body */
-.bd-notif-body{padding:0 12px 12px 12px;font-size:14px;line-height:1.4;color:var(--text-normal)}
+.bd-notif-body{padding:0 12px 12px 12px;font-size:14px;line-height:1.4;color:var(--text-default)}
 .bd-notif-body:empty{display:none}
 
 /* Footer (actions) */
@@ -1900,7 +1900,7 @@ function BD_NOTIF_ensureStyles() {
 .bd-notif-action{appearance:none;border:none;border-radius:4px;padding:6px 12px;font-size:13px;font-weight:500;cursor:pointer;transition:filter .1s,background .1s}
 .bd-notif-action.bd-notif-btn-primary{background:var(--brand-500);color:#fff}
 .bd-notif-action.bd-notif-btn-primary:hover{filter:brightness(1.1)}
-.bd-notif-action.bd-notif-btn-secondary{background:var(--background-secondary);color:var(--text-normal)}
+.bd-notif-action.bd-notif-btn-secondary{background:var(--background-secondary);color:var(--text-default)}
 .bd-notif-action.bd-notif-btn-secondary:hover{background:var(--background-secondary-alt)}
 .bd-notif-action.bd-notif-btn-danger{background:var(--status-danger);color:#fff}
 .bd-notif-action.bd-notif-btn-danger:hover{filter:brightness(1.1)}
