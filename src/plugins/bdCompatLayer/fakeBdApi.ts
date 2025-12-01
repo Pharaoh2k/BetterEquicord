@@ -3098,7 +3098,8 @@ function assignToGlobal() {
         acc[key] = {
             get: () => letsHopeThisObjectWillBeTheOnlyGlobalBdApiInstance[key],
             set: api_settersToSet.includes(key) ? v => letsHopeThisObjectWillBeTheOnlyGlobalBdApiInstance[key] = v : undefined,
-            configurable: true
+            configurable: true,
+            enumerable: true
         };
         return acc;
     }, {} as PropertyDescriptorMap);
