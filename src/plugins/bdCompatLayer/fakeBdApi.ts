@@ -1470,7 +1470,7 @@ export const HooksHolder = {
             const unsubscribe = subscribeToData(pluginName, key, forceUpdate);
             return unsubscribe;
         }, [pluginName, key]);
-        return DataHolder.load(pluginName, key);
+        return DataHolder.load(pluginName, key) as T | undefined;
     }
 };
 class HooksWrapper {
@@ -2090,7 +2090,7 @@ function BD_NOTIF_Container() {
         const update = () => setNotifications(NotificationStore.getAll());
         const unsub = NotificationStore.subscribe(update);
         update();
-        return unsub;
+        return () => { unsub(); };
     }, []);
 
     const handleClose = R.useCallback((id: string) => {
