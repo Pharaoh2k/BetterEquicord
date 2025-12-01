@@ -2804,8 +2804,10 @@ class BdApiReImplementationInstance {
             Object.assign(_ReactDOM_With_createRoot, { ...Vencord.Webpack.Common.ReactDOM, createRoot: Vencord.Webpack.Common.createRoot });
         return _ReactDOM_With_createRoot;
     }
+    #reactUtils: any = null;
     get ReactUtils() {
-        return {
+        if (this.#reactUtils) return this.#reactUtils;
+        this.#reactUtils = {
             get rootInstance() {
                 return ReactUtils_filler.rootInstance;
             },
@@ -2891,13 +2893,13 @@ class BdApiReImplementationInstance {
             ): React.FC<React.ComponentProps<T>> {
                 const FC = getReactComponentType(functionComponent);
                 const R = getGlobalApi().React;
-
+                
                 // Return a component wrapped in ErrorBoundary for safe rendering
                 // This catches hook errors and render failures without crashing the app
                 return function WrappedComponent(props: React.ComponentProps<T>) {
                     return R.createElement(
                         ErrorBoundary,
-                        {
+                        { 
                             noop: true, // Silent fail in production, still logs
                             message: "BD plugin component crashed while rendering"
                         },
@@ -2906,6 +2908,7 @@ class BdApiReImplementationInstance {
                 } as React.FC<React.ComponentProps<T>>;
             }
         };
+        return this.#reactUtils;
     }
     findModuleByProps(...props) {
         return this.findModule(module =>
