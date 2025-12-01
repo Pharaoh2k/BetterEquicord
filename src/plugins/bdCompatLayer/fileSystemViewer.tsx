@@ -1,74 +1,60 @@
 /* eslint-disable simple-header/header */
 /*
  * Vencord, a modification for Discord's desktop app
- * Copyright (c) 2022 Vendicated and contributors
  *
- * BD Compatibility Layer plugin
- * Copyright (c) 2023-2025 Davvy and WhoIsThis
+ * BD Compatibility Layer plugin for Vencord
+ * Copyright (c) 2025 Pharaoh2k
+ *
+ * See /CHANGES/CHANGELOG.txt for a list of changes by Pharaoh2k.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
+ * the Free Software Foundation, version 3 of the License only.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+ * See the LICENSE file in the Vencord repository root for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>.
- *
- * Modifications to BD Compatibility Layer:
- * Copyright (c) 2025 Pharaoh2k
- * - Complete rewrite of file system viewer with modern UI
- * - Added Monaco editor integration for in-browser code editing with syntax highlighting
- * - Added detached editor modal with change tracking and autosave functionality
- * - Implemented unified cross-backend filesystem helpers (Node fs, FSUtils, IndexedDB, localStorage)
- * - Added file search with debounced filtering and breadth-first warm-loading
- * - Added storage backend detection and quota display widget
- * - Implemented rich file preview system (images, video, audio, PDF, markdown, code)
- * - Added file type registry with extension-to-language mapping
- * - Implemented atomic file writes with fsync for data durability
- * - Added properties panel with file metadata display
- * - Implemented tree state management via reducer pattern
- * - Added highlight-on-search functionality
- * - Added detached Monaco editor with unsaved changes confirmation
-*/
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
+
 
 import { classNameFactory } from "@api/Styles";
-import { FolderIcon, PlusIcon, RestartIcon } from "@components/Icons";
+import { BaseText } from "@components/BaseText";
+import { Button, TextButton, type ButtonVariant } from "@components/Button";
+import { Card } from "@components/Card";
+import { FolderIcon, RestartIcon } from "@components/Icons";
 import { Paragraph } from "@components/Paragraph";
+import { Span } from "@components/Span";
 import { QuickAction, QuickActionCard } from "@components/settings/QuickAction";
 import { SettingsTab, wrapTab } from "@components/settings/tabs";
 import { ModalRoot, ModalSize, openModal } from "@utils/modal";
 import { Plugin } from "@utils/types";
-// import { Button, Card, Forms, hljs, Parser, React, ScrollerThin, TabBar, Text, TextInput, Tooltip, useEffect, useMemo, useReducer, useRef, useState } from "@webpack/common";
-import { Button, hljs, Parser, React, ScrollerThin, TabBar, Text, TextInput, Tooltip, useEffect, useMemo, useReducer, useRef, useState } from "@webpack/common"; // using Paragraph in Equicord, instead of Forms
-import { Card } from "@components/Card";
+import { hljs, Parser, React, ScrollerThin, TabBar, TextInput, Tooltip, useEffect, useMemo, useReducer, useRef, useState } from "@webpack/common"; // using Paragraph in Equicord, instead of Forms
 
 import { PLUGIN_NAME } from "./constants";
 import { getGlobalApi } from "./fakeBdApi";
 import { addCustomPlugin, convertPlugin } from "./pluginConstructor";
-import { compat_logger, FSUtils, readdirPromise, reloadCompatLayer, ZIPUtils } from "./utils";
-
+import { compat_logger, FSUtils, readdirPromise, reloadCompatLayer, reloadPluginsSelectively, ZIPUtils } from "./utils";
 type SettingsPlugin = Plugin & {
     customSections: ((ID: Record<string, unknown>) => any)[];
 };
-
 interface FileNode {
     id: string;
     name: string;
     path: string;
     isDirectory: boolean;
     size?: number;
+    mtime?: number;
     children?: FileNode[];
     expanded?: boolean;
 }
-
+type ChangeMark = "new" | "updated";
+type PluginMetaValue = number | string | undefined;
+type PluginSnapshot = Record<string, PluginMetaValue>;
 const cl = classNameFactory("vc-vfs-");
 const TabName = "Virtual Filesystem";
-
 /** ---------- Backend detection ---------- */
 function detectFsBackend(): { name: string; color: string; kind: "RealFS" | "IndexedDB" | "localStorage" | "Filesystem" | "Unknown"; } {
     try {
@@ -81,53 +67,45 @@ function detectFsBackend(): { name: string; color: string; kind: "RealFS" | "Ind
         return { name: "Unknown", color: "var(--status-danger)", kind: "Unknown" };
     }
 }
-
 /** ---------- Unified FS helpers (prefer virtual utils, fall back to Node FS) ---------- */
 const fsAsync = () => {
     try {
-        const fs = (window as any).require?.("fs");
+        const fs = (globalThis as any).require?.("fs");
         return fs?.promises ?? null;
     } catch {
         return null;
     }
 };
-
 const nodeFs = () => {
     try {
-        return (window as any).require?.("fs") ?? null;
+        return (globalThis as any).require?.("fs") ?? null;
     } catch {
         return null;
     }
 };
-
 const pathLib = () => {
     try {
-        return (window as any).require?.("path") ?? null;
+        return (globalThis as any).require?.("path") ?? null;
     } catch {
         return null;
     }
 };
-
-// Very small POSIX join for non-Node cases
 const joinPosix = (...parts: string[]) =>
     parts
         .filter(Boolean)
         .join("/")
-        .replace(/\/+/g, "/")
-        .replace(/(^|\/)\.\//g, "$1")
-        .replace(/\/$/, "") || "/";
-
+        .replaceAll(/\/+/g, "/")
+        .replaceAll(/(^|\/)\.\//g, "$1")
+        .replaceAll(/\/$/g, "") || "/";
 async function uReadDir(path: string): Promise<string[]> {
-    // readdirPromise is provided by the utils and expected to work across backends
     return (await readdirPromise(path)) as string[];
 }
-
 async function uStat(path: string): Promise<{ isDirectory: boolean; size?: number; mtime?: number; } | null> {
     const fs = fsAsync();
     if (fs) {
         try {
             const s = await fs.stat(path);
-            return { isDirectory: s.isDirectory(), size: s.isFile() ? Number(s.size) : undefined, mtime: (s as any).mtime?.valueOf?.() };
+            return { isDirectory: s.isDirectory(), size: s.isFile() ? Number(s.size) : undefined, mtime: s.mtime?.valueOf?.() };
         } catch (e) {
             compat_logger.warn("stat failed via Node fs", path, e);
         }
@@ -140,10 +118,8 @@ async function uStat(path: string): Promise<{ isDirectory: boolean; size?: numbe
     } catch (e) {
         compat_logger.warn("stat failed via FSUtils", path, e);
     }
-    // Unknown: return null to avoid wrong UI hints
     return null;
 }
-
 async function uReadFile(path: string, encoding?: "utf8"): Promise<Uint8Array | string> {
     const fs = fsAsync();
     if (fs) {
@@ -154,8 +130,6 @@ async function uReadFile(path: string, encoding?: "utf8"): Promise<Uint8Array | 
     }
     throw new Error("No filesystem available to read file");
 }
-
-// Atomic write: write to temp then rename (best-effort fsync on Node)
 async function uWriteFileAtomic(path: string, data: string | Uint8Array) {
     const fs = fsAsync();
     const p = pathLib();
@@ -163,14 +137,10 @@ async function uWriteFileAtomic(path: string, data: string | Uint8Array) {
         if ((FSUtils as any)?.writeFile) return (FSUtils as any).writeFile(path, data);
         throw new Error("No filesystem available to write file");
     }
-
     const dir = p.dirname(path);
     const base = p.basename(path);
     const tmp = p.join(dir, `.${base}.tmp-${Date.now()}`);
-
     const nf = nodeFs();
-
-    // Best-effort fsync for durability
     if (nf?.promises?.open) {
         const fh = await nf.promises.open(tmp, "w");
         try {
@@ -180,7 +150,6 @@ async function uWriteFileAtomic(path: string, data: string | Uint8Array) {
             try { await fh.close(); } catch { /* ignore */ }
         }
         await fs.rename(tmp, path);
-        // Try to fsync the directory as well
         try {
             const dh = await nf.promises.open(dir, "r");
             try { await dh.sync(); } finally { try { await dh.close(); } catch { /* ignore */ } }
@@ -190,7 +159,6 @@ async function uWriteFileAtomic(path: string, data: string | Uint8Array) {
         await fs.rename(tmp, path);
     }
 }
-
 async function uUnlink(path: string) {
     const fs = fsAsync();
     if (fs) {
@@ -198,14 +166,11 @@ async function uUnlink(path: string) {
             await fs.unlink(path);
             return;
         } catch {
-            // Might be a dir -> fall back
         }
     }
     return FSUtils.removeDirectoryRecursive(path);
 }
-
 /** ---------- Small helpers ---------- */
-// Use structuredClone where available; fall back to JSON
 function deepClone<T>(obj: T): T {
     try {
         // @ts-ignore
@@ -213,7 +178,6 @@ function deepClone<T>(obj: T): T {
     } catch { }
     return JSON.parse(JSON.stringify(obj));
 }
-
 /** ---------- Debounce hook (kept minimal to avoid extra deps) ---------- */
 function useDebounce<T>(value: T, delay = 250): T {
     const [v, setV] = useState(value);
@@ -223,14 +187,12 @@ function useDebounce<T>(value: T, delay = 250): T {
     }, [value, delay]);
     return v;
 }
-
 /** ---------- Tree state via reducer (single source of truth) ---------- */
 type TreeState = { roots: FileNode[]; };
 type TreeAction =
     | { type: "set"; roots: FileNode[]; }
     | { type: "setChildren"; path: string; children: FileNode[]; }
     | { type: "setExpanded"; path: string; expanded: boolean; };
-
 function treeReducer(state: TreeState, action: TreeAction): TreeState {
     const update = (n: FileNode): FileNode => {
         switch (action.type) {
@@ -244,7 +206,6 @@ function treeReducer(state: TreeState, action: TreeAction): TreeState {
         if (!n.children?.length) return n;
         return { ...n, children: n.children.map(update) };
     };
-
     switch (action.type) {
         case "set":
             return { roots: action.roots };
@@ -255,181 +216,480 @@ function treeReducer(state: TreeState, action: TreeAction): TreeState {
             return state;
     }
 }
-
 /** ---------- Extension registry (single source of truth) ---------- */
-type PreviewType = "image" | "video" | "audio" | "markdown" | "code" | "pdf" | "text";
-
 type ExtInfo = {
+    preview: "code" | "markdown" | "image" | "video" | "audio" | "pdf" | "text";
     lang?: string;
-    preview: PreviewType;
+    niceType: string;
+    icon: string;
     mime?: string;
-    icon?: string;
-    niceType?: string;
-    binary?: boolean; // whether to read as bytes by default
+    binary?: boolean;
 };
-
-const EXT: Record<string, ExtInfo> = {
-    // Code / Markup
-    js: { preview: "code", lang: "javascript", niceType: "JavaScript", icon: "📜" },
-    cjs: { preview: "code", lang: "javascript", niceType: "JavaScript", icon: "📜" },
-    mjs: { preview: "code", lang: "javascript", niceType: "JavaScript", icon: "📜" },
-    jsx: { preview: "code", lang: "javascript", niceType: "JavaScript React", icon: "📜" },
-    ts: { preview: "code", lang: "typescript", niceType: "TypeScript", icon: "📜" },
-    tsx: { preview: "code", lang: "typescript", niceType: "TypeScript React", icon: "📜" },
-    json: { preview: "code", lang: "json", niceType: "JSON", icon: "📄" },
-    css: { preview: "code", lang: "css", niceType: "Stylesheet", icon: "🎨" },
-    scss: { preview: "code", lang: "scss", niceType: "SCSS", icon: "🎨" },
-    less: { preview: "code", lang: "less", niceType: "LESS", icon: "🎨" },
-    html: { preview: "code", lang: "html", niceType: "HTML", icon: "📄" },
-    xml: { preview: "code", lang: "xml", niceType: "XML", icon: "📄" },
-    yml: { preview: "code", lang: "yaml", niceType: "YAML", icon: "📄" },
-    yaml: { preview: "code", lang: "yaml", niceType: "YAML", icon: "📄" },
-    md: { preview: "markdown", lang: "markdown", niceType: "Markdown", icon: "📝" },
-    markdown: { preview: "markdown", lang: "markdown", niceType: "Markdown", icon: "📝" },
-    ini: { preview: "code", lang: "ini", niceType: "Config", icon: "⚙️" },
-    sh: { preview: "code", lang: "shell", niceType: "Shell Script", icon: "⚙️" },
-    bash: { preview: "code", lang: "shell", niceType: "Shell Script", icon: "⚙️" },
-    py: { preview: "code", lang: "python", niceType: "Python", icon: "📜" },
-    php: { preview: "code", lang: "php", niceType: "PHP", icon: "📜" },
-    rb: { preview: "code", lang: "ruby", niceType: "Ruby", icon: "📜" },
-    go: { preview: "code", lang: "go", niceType: "Go", icon: "📜" },
-    rs: { preview: "code", lang: "rust", niceType: "Rust", icon: "📜" },
-    sql: { preview: "code", lang: "sql", niceType: "SQL", icon: "📜" },
-    c: { preview: "code", lang: "c", niceType: "C", icon: "📜" },
-    h: { preview: "code", lang: "c", niceType: "C Header", icon: "📜" },
-    cpp: { preview: "code", lang: "cpp", niceType: "C++", icon: "📜" },
-    cxx: { preview: "code", lang: "cpp", niceType: "C++", icon: "📜" },
-    cc: { preview: "code", lang: "cpp", niceType: "C++", icon: "📜" },
-    hpp: { preview: "code", lang: "cpp", niceType: "C++ Header", icon: "📜" },
-    java: { preview: "code", lang: "java", niceType: "Java", icon: "📜" },
-    cs: { preview: "code", lang: "csharp", niceType: "C#", icon: "📜" },
-    dockerfile: { preview: "code", lang: "dockerfile", niceType: "Dockerfile", icon: "📜" },
-    lua: { preview: "code", lang: "lua", niceType: "Lua", icon: "📜" },
-    swift: { preview: "code", lang: "swift", niceType: "Swift", icon: "📜" },
-    kt: { preview: "code", lang: "kotlin", niceType: "Kotlin", icon: "📜" },
-
-    // Media
-    png: { preview: "image", mime: "image/png", niceType: "PNG Image", icon: "🖼️", binary: true },
-    jpg: { preview: "image", mime: "image/jpeg", niceType: "JPEG Image", icon: "🖼️", binary: true },
-    jpeg: { preview: "image", mime: "image/jpeg", niceType: "JPEG Image", icon: "🖼️", binary: true },
-    gif: { preview: "image", mime: "image/gif", niceType: "GIF Image", icon: "🖼️", binary: true },
-    webp: { preview: "image", mime: "image/webp", niceType: "WebP Image", icon: "🖼️", binary: true },
-    bmp: { preview: "image", mime: "image/bmp", niceType: "BMP Image", icon: "🖼️", binary: true },
-    ico: { preview: "image", mime: "image/x-icon", niceType: "ICO Image", icon: "🖼️", binary: true },
-    svg: { preview: "image", mime: "image/svg+xml", niceType: "SVG Vector", icon: "🖼️", lang: "xml", binary: false },
-
-    mp4: { preview: "video", mime: "video/mp4", niceType: "MP4 Video", icon: "🎬", binary: true },
-    webm: { preview: "video", mime: "video/webm", niceType: "WebM Video", icon: "🎬", binary: true },
-    mov: { preview: "video", mime: "video/quicktime", niceType: "MOV Video", icon: "🎬", binary: true },
-
-    mp3: { preview: "audio", mime: "audio/mpeg", niceType: "MP3 Audio", icon: "🎵", binary: true },
-    ogg: { preview: "audio", mime: "audio/ogg", niceType: "OGG Audio", icon: "🎵", binary: true },
-    wav: { preview: "audio", mime: "audio/wav", niceType: "WAV Audio", icon: "🎵", binary: true },
-    m4a: { preview: "audio", mime: "audio/mp4", niceType: "M4A Audio", icon: "🎵", binary: true },
-
-    pdf: { preview: "pdf", mime: "application/pdf", niceType: "PDF Document", icon: "📕", binary: true },
-
-    // Text
-    txt: { preview: "text", niceType: "Text", icon: "📝" },
-
-    // Archives
-    zip: { preview: "text", niceType: "ZIP Archive", icon: "📦", binary: true },
-    rar: { preview: "text", niceType: "RAR Archive", icon: "📦", binary: true },
-    tar: { preview: "text", niceType: "TAR Archive", icon: "📦", binary: true },
-    gz: { preview: "text", niceType: "GZip Archive", icon: "📦", binary: true }
-};
-
+const same = (keys: string[], info: ExtInfo): [string, ExtInfo][] =>
+    keys.map(k => [k, { ...info }]);
+const code = (lang: string, niceType: string, icon = "📜"): ExtInfo => ({
+    preview: "code",
+    lang,
+    niceType,
+    icon,
+});
+const markdown = (niceType = "Markdown"): ExtInfo => ({
+    preview: "markdown",
+    lang: "markdown",
+    niceType,
+    icon: "📝",
+});
+const image = (mime: string, label: string): ExtInfo => ({
+    preview: "image",
+    mime,
+    niceType: label,
+    icon: "🖼️",
+    binary: true,
+});
+const video = (mime: string, label: string): ExtInfo => ({
+    preview: "video",
+    mime,
+    niceType: label,
+    icon: "🎬",
+    binary: true,
+});
+const audio = (mime: string, label: string): ExtInfo => ({
+    preview: "audio",
+    mime,
+    niceType: label,
+    icon: "🎵",
+    binary: true,
+});
+const binText = (label: string): ExtInfo => ({
+    preview: "text",
+    niceType: label,
+    icon: "📦",
+    binary: true,
+});
+const entries: [string, ExtInfo][] = [
+    ...same(["js", "cjs", "mjs"], code("javascript", "JavaScript")),
+    ["jsx", code("javascript", "JavaScript React")],
+    ["ts", code("typescript", "TypeScript")],
+    ["tsx", code("typescript", "TypeScript React")],
+    ["json", { preview: "code", lang: "json", niceType: "JSON", icon: "📄" }],
+    ["css", { preview: "code", lang: "css", niceType: "Stylesheet", icon: "🎨" }],
+    ["scss", { preview: "code", lang: "scss", niceType: "SCSS", icon: "🎨" }],
+    ["less", { preview: "code", lang: "less", niceType: "LESS", icon: "🎨" }],
+    ["html", { preview: "code", lang: "html", niceType: "HTML", icon: "📄" }],
+    ["xml", { preview: "code", lang: "xml", niceType: "XML", icon: "📄" }],
+    ...same(["yml", "yaml"], { preview: "code", lang: "yaml", niceType: "YAML", icon: "📄" }),
+    ...same(["md", "markdown"], markdown()),
+    ["ini", { preview: "code", lang: "ini", niceType: "Config", icon: "⚙️" }],
+    ...same(["sh", "bash"], { preview: "code", lang: "shell", niceType: "Shell Script", icon: "⚙️" }),
+    ["py", code("python", "Python")],
+    ["php", code("php", "PHP")],
+    ["rb", code("ruby", "Ruby")],
+    ["go", code("go", "Go")],
+    ["rs", code("rust", "Rust")],
+    ["sql", code("sql", "SQL")],
+    ["c", code("c", "C")],
+    ["h", { preview: "code", lang: "c", niceType: "C Header", icon: "📜" }],
+    ...same(["cpp", "cxx", "cc"], { preview: "code", lang: "cpp", niceType: "C++", icon: "📜" }),
+    ["hpp", { preview: "code", lang: "cpp", niceType: "C++ Header", icon: "📜" }],
+    ["java", code("java", "Java")],
+    ["cs", { preview: "code", lang: "csharp", niceType: "C#", icon: "📜" }],
+    ["dockerfile", { preview: "code", lang: "dockerfile", niceType: "Dockerfile", icon: "📜" }],
+    ["lua", code("lua", "Lua")],
+    ["swift", code("swift", "Swift")],
+    ["kt", code("kotlin", "Kotlin")],
+    ["png", image("image/png", "PNG Image")],
+    ...same(["jpg", "jpeg"], image("image/jpeg", "JPEG Image")),
+    ["gif", image("image/gif", "GIF Image")],
+    ["webp", image("image/webp", "WebP Image")],
+    ["bmp", image("image/bmp", "BMP Image")],
+    ["ico", { preview: "image", mime: "image/x-icon", niceType: "ICO Image", icon: "🖼️", binary: true }],
+    ["svg", { preview: "image", mime: "image/svg+xml", niceType: "SVG Vector", icon: "🖼️", lang: "xml", binary: false }],
+    ["mp4", video("video/mp4", "MP4 Video")],
+    ["webm", video("video/webm", "WebM Video")],
+    ["mov", video("video/quicktime", "MOV Video")],
+    ["mp3", audio("audio/mpeg", "MP3 Audio")],
+    ["ogg", audio("audio/ogg", "OGG Audio")],
+    ["wav", audio("audio/wav", "WAV Audio")],
+    ["m4a", audio("audio/mp4", "M4A Audio")],
+    ["pdf", { preview: "pdf", mime: "application/pdf", niceType: "PDF Document", icon: "📕", binary: true }],
+    ["txt", { preview: "text", niceType: "Text", icon: "📝" }],
+    ["zip", binText("ZIP Archive")],
+    ["rar", binText("RAR Archive")],
+    ["tar", binText("TAR Archive")],
+    ["gz", binText("GZip Archive")],
+];
+export const EXT: Record<string, ExtInfo> = Object.fromEntries(entries) as Record<string, ExtInfo>;
+const EXT_EXTRACTOR = /\.([a-z0-9]+)$/;
 function getExt(name: string): string {
-    const m = name.toLowerCase().match(/\.([a-z0-9]+)$/);
-    return m?.[1] ?? "";
+    const match = EXT_EXTRACTOR.exec(name.toLowerCase());
+    return match?.[1] ?? "";
 }
-
 function extInfo(ext: string): ExtInfo {
     return EXT[ext] ?? { preview: "text" };
 }
-
 function formatBytes(bytes?: number): string {
-    if (bytes == null || isNaN(bytes as any)) return "0 B";
+    if (bytes == null || Number.isNaN(bytes as any)) return "0 B";
     const k = 1024;
     const sizes = ["B", "KB", "MB", "GB", "TB"];
     const i = Math.min(sizes.length - 1, Math.max(0, Math.floor(Math.log(Math.max(1, bytes)) / Math.log(k))));
     return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
 }
-
+async function reloadPlugin(path: string) {
+    const p = pathLib();
+    const parsed = p?.parse?.(path) ?? { dir: "", name: "" };
+    const fullFilename = p?.basename?.(path) ?? "";
+    const plugin = getGlobalApi()
+        .Plugins.getAll()
+        .find((pl: any) => pl.sourcePath === parsed.dir && pl.filename === fullFilename);
+    if (!plugin) return;
+    Vencord.Plugins.stopPlugin(plugin as Plugin);
+    delete (Vencord.Plugins as any).plugins[plugin.name];
+    let code = "";
+    try {
+        code = (await uReadFile(path, "utf8")) as string;
+    } catch (e) {
+        compat_logger.error("Failed to read plugin for reload", e);
+        return;
+    }
+    const converted = await convertPlugin(code, parsed.name, true, parsed.dir);
+    await addCustomPlugin(converted);
+}
 /** ---------- Component ---------- */
 function FileSystemTab() {
     const backend = detectFsBackend();
-
+    const getLS = (): Storage | null => {
+        try {
+            if (globalThis.window === undefined) {
+                return null;
+            }
+            return globalThis.window.localStorage;
+        } catch {
+            return null;
+        }
+    };
     const [searchQuery, setSearchQuery] = useState("");
     const debouncedSearch = useDebounce(searchQuery, 250);
     const searchSeq = useRef(0);
-
     const [selectedFile, setSelectedFile] = useState<FileNode | null>(null);
+    const [selectionMode, setSelectionMode] = useState(false);
+    const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
+    const toggleFileSelection = (path: string) => {
+        setSelectedFiles(prev => {
+            const next = new Set(prev);
+            if (next.has(path)) {
+                next.delete(path);
+            } else {
+                next.add(path);
+            }
+            return next;
+        });
+    };
+    const clearSelection = () => {
+        setSelectedFiles(new Set());
+        setSelectionMode(false);
+    };
     const [tree, dispatch] = useReducer(treeReducer, { roots: [] });
-
     const [filteredTree, setFilteredTree] = useState<FileNode[]>([]);
     const [searchLoading, setSearchLoading] = useState(false);
     const [searchResultCount, setSearchResultCount] = useState(0);
-
+    // ---- constants / keys
+    const PLUGINS_DIR = "/BD/plugins";
+    const EXPANSION_KEY = "bd.vfs.expansion";
+    const SORT_KEY = "bd.vfs.sort";
+    // ---- sorting state
+    type SortKey = "name" | "mtime" | "size";
+    type SortDir = "asc" | "desc";
+    const [sortKey, setSortKey] = useState<SortKey>("name");
+    const [sortDir, setSortDir] = useState<SortDir>("asc");
+    useEffect(() => {
+        const ls = getLS();
+        if (!ls) return;
+        const raw = ls.getItem(SORT_KEY);
+        if (!raw) return;
+        const [k, d] = raw.split(":");
+        if (k === "name" || k === "mtime" || k === "size") setSortKey(k as SortKey);
+        if (d === "asc" || d === "desc") setSortDir(d as SortDir);
+    }, []);
+    useEffect(() => {
+        const ls = getLS();
+        if (!ls) return;
+        ls.setItem(SORT_KEY, `${sortKey}:${sortDir}`);
+    }, [sortKey, sortDir]);
+    // ---- expansion persistence helpers (guarded)
+    const loadExpansionMap = (): Record<string, boolean> => {
+        const ls = getLS();
+        if (!ls) return {};
+        try {
+            const raw = ls.getItem(EXPANSION_KEY);
+            return raw ? JSON.parse(raw) : {};
+        } catch {
+            return {};
+        }
+    };
+    const saveExpansionMap = (m: Record<string, boolean>) => {
+        const ls = getLS();
+        if (!ls) return;
+        try {
+            ls.setItem(EXPANSION_KEY, JSON.stringify(m));
+        } catch { }
+    };
+    const rememberExpanded = (path: string, expanded: boolean) => {
+        const m = loadExpansionMap();
+        if (expanded) m[path] = true;
+        else delete m[path];
+        saveExpansionMap(m);
+    };
+    const collectExpansionMap = (nodes: FileNode[], into: Record<string, boolean> = {}) => {
+        for (const n of nodes) {
+            if ((n as any).expanded) into[n.path] = true;
+            if (n.children) collectExpansionMap(n.children, into);
+        }
+        return into;
+    };
+    const markPathExpanded = (path: string, map: Record<string, boolean>) => {
+        const parts = path.split("/").filter(Boolean);
+        let cur = "";
+        for (const seg of parts) {
+            cur += "/" + seg;
+            map[cur] = true;
+        }
+    };
+    const applyExpansionMap = async (node: FileNode, map: Record<string, boolean>) => {
+        if (!node.isDirectory) return;
+        if (map[node.path]) {
+            node.expanded = true;
+            const loaded = await fetchDirContent(node.path);
+            node.children = loaded.children ?? [];
+            for (const c of node.children) await applyExpansionMap(c, map);
+        }
+    };
+    // ---- recent-change marking (badges)
+    const [recentMarks, setRecentMarks] = useState<Record<string, ChangeMark>>({});
+    const [marksExpireAt, setMarksExpireAt] = useState<number>(0);
+    function clearMarksSoon(ms = 60000) {
+        setMarksExpireAt(Date.now() + ms);
+    }
+    useEffect(() => {
+        if (!marksExpireAt) return;
+        const t = setTimeout(() => setRecentMarks({}), Math.max(0, marksExpireAt - Date.now()));
+        return () => clearTimeout(t);
+    }, [marksExpireAt]);
+    async function snapshotPlugins(): Promise<PluginSnapshot> {
+        const names = await uReadDir(PLUGINS_DIR);
+        const meta: PluginSnapshot = {};
+        for (const name of names) {
+            if (!/\.plugin\.js$/i.test(name)) continue;
+            const full = joinPosix(PLUGINS_DIR, name);
+            const st = await uStat(full);
+            meta[name] = st?.mtime ?? st?.size;
+        }
+        return meta;
+    }
+    function diffSnapshots(prev: Record<string, number | string | undefined>, next: Record<string, number | string | undefined>) {
+        const added: string[] = [];
+        const updated: string[] = [];
+        for (const name of Object.keys(next)) {
+            if (!(name in prev)) added.push(name);
+            else if (prev[name] !== next[name]) updated.push(name);
+        }
+        return { added, updated };
+    }
+    function markChanged(added: string[], updated: string[]) {
+        if (!added.length && !updated.length) return;
+        const marks: Record<string, ChangeMark> = {};
+        for (const n of added) marks[joinPosix(PLUGINS_DIR, n)] = "new";
+        for (const n of updated) marks[joinPosix(PLUGINS_DIR, n)] = "updated";
+        setRecentMarks(marks);
+        clearMarksSoon(60000);
+    }
+    const applySort = (list: FileNode[]): FileNode[] => {
+        const dirs = list.filter(x => x.isDirectory);
+        const files = list.filter(x => !x.isDirectory);
+        const mul = sortDir === "asc" ? 1 : -1;
+        const cmp = (a: FileNode, b: FileNode) => {
+            switch (sortKey) {
+                case "name": return mul * a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+                case "size": return mul * (((a as any).size ?? 0) - ((b as any).size ?? 0));
+                case "mtime": return mul * (((a as any).mtime ?? 0) - ((b as any).mtime ?? 0));
+            }
+        };
+        dirs.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+        files.sort(cmp);
+        return [...dirs, ...files];
+    };
+    const refreshTreePreservingExpansion = async (ensurePluginsExpanded = false) => {
+        const currentMap = collectExpansionMap(tree.roots);
+        if (ensurePluginsExpanded) markPathExpanded(PLUGINS_DIR, currentMap);
+        currentMap["/"] = true;
+        saveExpansionMap(currentMap);
+        const root = await fetchDirContent("/");
+        root.expanded = true;
+        await applyExpansionMap(root, currentMap);
+        dispatch({ type: "set", roots: [root] });
+        setFilteredTree([root]);
+    };
+    useEffect(() => {
+        refreshTreePreservingExpansion(true);
+    }, [sortKey, sortDir]);
+    const onDragEnter = (e: React.DragEvent) => {
+        e.preventDefault();
+        dragDepth.current++;
+        setIsDropping(true);
+    };
+    const onDragOver = (e: React.DragEvent) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "copy";
+    };
+    const onDragLeave = () => {
+        dragDepth.current = Math.max(0, dragDepth.current - 1);
+        if (dragDepth.current === 0) setIsDropping(false);
+    };
+    const onDrop = async (e: React.DragEvent) => {
+        e.preventDefault();
+        setIsDropping(false);
+        const files = Array.from(e.dataTransfer.files || []);
+        const plugins = files.filter(f => /\.plugin\.js$/i.test(f.name));
+        if (!plugins.length) {
+            getGlobalApi().UI.showToast("No .plugin.js files found in drop.");
+            return;
+        }
+        const skipped = files.length - plugins.length;
+        if (skipped > 0) {
+            getGlobalApi().UI.showToast(`Skipped ${skipped} non-plugin file${skipped === 1 ? "" : "s"}.`);
+        }
+        const before = await snapshotPlugins();
+        for (const f of plugins) {
+            const buf = new Uint8Array(await f.arrayBuffer());
+            const full = joinPosix(PLUGINS_DIR, f.name);
+            await uWriteFileAtomic(full, buf);
+        }
+        const after = await snapshotPlugins();
+        const { added, updated } = diffSnapshots(before, after);
+        markChanged(added, updated);
+        const changedFiles = [...added, ...updated].map(n => joinPosix(PLUGINS_DIR, n));
+        if (changedFiles.length > 0) {
+            await reloadPluginsSelectively(changedFiles);
+        }
+        await refreshTreePreservingExpansion(true);
+        const addedStr = added.length ? `Added ${added.length}` : "";
+        const updStr = updated.length ? `${added.length ? " · " : ""}Updated ${updated.length}` : "";
+        const msg = addedStr || updStr ? `${addedStr}${updStr}` : `Imported ${plugins.length}`;
+        getGlobalApi().UI.showToast(`${msg} plugin${(added.length + updated.length) === 1 ? "" : "s"} via drag & drop.`);
+    };
+    async function waitForStablePluginsSnapshot(
+        prev: PluginSnapshot,
+        timeoutMs = 3000,
+        intervalMs = 200
+    ) {
+        const start = Date.now();
+        let last: PluginSnapshot = prev;
+        while (Date.now() - start < timeoutMs) {
+            const now = await snapshotPlugins();
+            const { added, updated } = diffSnapshots(last, now);
+            if (added.length === 0 && updated.length === 0) return now;
+            last = now;
+            await new Promise(r => setTimeout(r, intervalMs));
+        }
+        return await snapshotPlugins(); // best effort
+    }
+    // ---- drag & drop state
+    const [isDropping, setIsDropping] = useState(false);
+    const dragDepth = useRef(0);
+    async function handlePluginImport(bulk: boolean) {
+        try {
+            const before = await snapshotPlugins();
+            await FSUtils.importFile(PLUGINS_DIR, true, bulk, ".js");
+            const after = await waitForStablePluginsSnapshot(before);
+            const { added, updated } = diffSnapshots(before, after);
+            markChanged(added, updated);
+            const changedFiles = [...added, ...updated].map(n => joinPosix(PLUGINS_DIR, n));
+            if (changedFiles.length > 0) {
+                await reloadPluginsSelectively(changedFiles);
+            }
+            await refreshTreePreservingExpansion(true);
+            const addedStr = added.length ? `Added ${added.length}` : "";
+            const updStr = updated.length ? `${added.length ? " · " : ""}Updated ${updated.length}` : "";
+            const msg = addedStr || updStr ? `${addedStr}${updStr}` : "Imported plugin(s)";
+            getGlobalApi().UI.showToast(`${msg} and reloaded.`);
+        } catch (e) {
+            compat_logger.error("Import failed", e);
+            getGlobalApi().UI.showToast("Import failed");
+        }
+    }
+    async function handleBulkDelete() {
+        if (selectedFiles.size === 0) return;
+        const count = selectedFiles.size;
+        openConfirmModal({
+            title: "Delete files",
+            body: `Are you sure you want to delete ${count} file${count === 1 ? "" : "s"}? This cannot be undone.`,
+            confirmText: "Delete All",
+            confirmVariant: "dangerPrimary",
+            onConfirm: async () => {
+                for (const path of selectedFiles) {
+                    try {
+                        const stat = await uStat(path);
+                        if (stat?.isDirectory) {
+                            FSUtils.removeDirectoryRecursive(path);
+                        } else {
+                            await uUnlink(path);
+                        }
+                    } catch (e) {
+                        compat_logger.error("Failed to delete", path, e);
+                    }
+                }
+                await refreshTreePreservingExpansion(false);
+                clearSelection();
+                setSelectedFile(null);
+                getGlobalApi().UI.showToast(`Deleted ${count} file${count === 1 ? "" : "s"}.`);
+            }
+        });
+    }
     const enum DetailTab {
         PREVIEW,
         PROPERTIES,
         HISTORY
     }
     const [currentDetailTab, setCurrentDetailTab] = useState(DetailTab.PREVIEW);
-
     const [storageUsed, setStorageUsed] = useState(0);
     const [storageTotal, setStorageTotal] = useState(0);
-
-    // Format helpers
     const storagePercent = storageTotal > 0 ? Math.min(100, (storageUsed / storageTotal) * 100) : 0;
-
-    // Load initial tree
     useEffect(() => {
         (async () => {
             try {
                 const root = await fetchDirContent("/");
                 root.expanded = true;
-                const children = await Promise.all(
-                    (root.children || []).slice(0, 10).map(async child => (child.isDirectory ? await fetchDirContent(child.path) : child))
-                );
-                root.children = children;
+                const map = loadExpansionMap();
+                map["/"] = true;
+                await applyExpansionMap(root, map);
                 dispatch({ type: "set", roots: [root] });
                 setFilteredTree([root]);
             } catch (e) {
                 compat_logger.error("Failed to load file tree", e);
             }
         })();
-        // storage calc
         (async () => {
             try {
                 const used = FSUtils.getDirectorySize?.("/") ?? 0;
                 setStorageUsed(used);
-
-                // Only show web quota when not on RealFS
-                if (backend.kind !== "RealFS") {
+                if (backend.kind === "RealFS") {
+                    setStorageTotal(0);
+                } else {
                     const estimate = (navigator as any)?.storage?.estimate ? await (navigator as any).storage.estimate() : null;
                     if (estimate?.quota) setStorageTotal(estimate.quota);
-                } else {
-                    setStorageTotal(0); // unknown capacity on RealFS
                 }
             } catch (e) {
                 compat_logger.error("Failed to calculate storage", e);
             }
         })();
     }, []);
-
-    // Warm-load BFS for search (bounded, cancellable)
     type QueueItem = { node: FileNode; depth: number; };
     const warmLoadForSearch = async (roots: FileNode[], maxDepth = 3, maxNodes = 2000, seq = 0) => {
         const queue: QueueItem[] = roots.map(r => ({ node: r, depth: 0 }));
         let loadedCount = 0;
-
         while (queue.length && loadedCount < maxNodes) {
-            if (seq !== searchSeq.current) return roots; // cancelled
+            if (seq !== searchSeq.current) return null;  // Changed from 'roots' to 'null'
             const { node, depth } = queue.shift()!;
             if (!node.isDirectory || depth >= maxDepth) continue;
-
             if (node.children == null) {
                 try {
                     const loaded = await fetchDirContent(node.path);
@@ -442,32 +702,28 @@ function FileSystemTab() {
                     dispatch({ type: "setChildren", path: node.path, children: [] });
                 }
             }
-
-            node.children?.forEach(child => queue.push({ node: child, depth: depth + 1 }));
+            if (node.children) {
+                for (const child of node.children) {
+                    queue.push({ node: child, depth: depth + 1 });
+                }
+            }
         }
-
         return roots;
     };
-
-    // One-pass filter with match count
     const filterWithCount = (node: FileNode, q: string): { node: FileNode | null; count: number; } => {
         if (!q) return { node, count: 0 };
         const needle = q.toLowerCase();
         const selfMatch = node.name.toLowerCase().includes(needle) || node.path.toLowerCase().includes(needle);
         let total = selfMatch ? 1 : 0;
-
         const kids: FileNode[] = [];
         for (const c of node.children ?? []) {
             const r = filterWithCount(c, q);
             total += r.count;
             if (r.node) kids.push(r.node);
         }
-
         if (selfMatch || kids.length) return { node: { ...node, children: kids, expanded: true }, count: total };
         return { node: null, count: 0 };
     };
-
-    // Searching (cancellable)
     useEffect(() => {
         (async () => {
             const seq = ++searchSeq.current;
@@ -479,7 +735,7 @@ function FileSystemTab() {
             setSearchLoading(true);
             try {
                 const warmed = await warmLoadForSearch(deepClone(tree.roots), 3, 2000, seq);
-                if (seq !== searchSeq.current) return; // cancelled
+                if (seq !== searchSeq.current || !warmed) return;
                 const filtered: FileNode[] = [];
                 let total = 0;
                 for (const r of warmed) {
@@ -494,16 +750,14 @@ function FileSystemTab() {
             }
         })();
     }, [debouncedSearch, tree.roots]);
-
-    // Helpers to interact with reducer
     const handleToggleExpand = (path: string, expanded: boolean) => {
         dispatch({ type: "setExpanded", path, expanded });
+        rememberExpanded(path, expanded);
     };
     const handleChildrenLoaded = (path: string, children: FileNode[]) => {
-        dispatch({ type: "setChildren", path, children });
+        dispatch({ type: "setChildren", path, children: applySort(children) });
     };
 
-    // Directory fetcher using unified FS helpers
     async function fetchDirContent(path: string): Promise<FileNode> {
         const p = pathLib();
         const base = p?.basename?.(path) || "/";
@@ -514,30 +768,33 @@ function FileSystemTab() {
             isDirectory: true,
             children: undefined
         };
-
         const fs = fsAsync();
-        // Preferred path: Node fs with dirents to avoid N+1 stat calls
-        if (fs && (nodeFs() as any)?.Dirent) {
+        if (fs && nodeFs()?.Dirent) {
             try {
                 // @ts-ignore - withFileTypes supported in Node >=10
                 const dirents = await fs.readdir(path, { withFileTypes: true } as any);
-                node.children = dirents.map((d: any) => {
+                node.children = await Promise.all(dirents.map(async (d: any) => {
                     const full = p ? p.join(path, d.name) : joinPosix(path, d.name);
-                    return {
+                    const entry: FileNode = {
                         id: `fs-${encodeURIComponent(full)}`,
                         name: d.name,
                         path: full,
                         isDirectory: !!d.isDirectory?.(),
                         children: undefined
-                    } as FileNode;
-                });
+                    };
+                    if (!entry.isDirectory && sortKey !== "name") {
+                        const st = await uStat(full);
+                        (entry as any).size = st?.size;
+                        (entry as any).mtime = st?.mtime;
+                    }
+                    return entry;
+                }));
+                node.children = applySort(node.children);
                 return node;
             } catch (err) {
                 compat_logger.warn("readdir(withFileTypes) failed, falling back", err);
             }
         }
-
-        // Fallback: cross-backend readdir + per-entry stat
         try {
             const names = await uReadDir(path);
             const children: FileNode[] = [];
@@ -550,22 +807,20 @@ function FileSystemTab() {
                     path: full,
                     isDirectory: !!st?.isDirectory,
                     size: st?.size,
+                    mtime: st?.mtime,
                     children: undefined
                 });
             }
-            node.children = children;
+            node.children = applySort(children);
         } catch (err) {
             compat_logger.error("Failed to read directory", path, err);
             node.children = [];
         }
         return node;
     }
-
-    // File actions
     const handleFileAction = async (action: "reload" | "export" | "delete", node?: FileNode) => {
         const target = node || selectedFile;
         if (!target) return;
-
         switch (action) {
             case "reload":
                 if (target.name.endsWith(".plugin.js")) await reloadPlugin(target.path);
@@ -576,49 +831,22 @@ function FileSystemTab() {
             case "delete":
                 openConfirmModal({
                     title: "Delete file",
-                    body: `Are you sure you want to delete “${target.name}”? This cannot be undone.`,
+                    body: `Are you sure you want to delete "${target.name}"? This cannot be undone.`,
                     confirmText: "Delete",
-                    confirmColor: Button.Colors.RED,
+                    confirmVariant: "dangerPrimary",
                     onConfirm: async () => {
                         if (target.isDirectory) {
-                            await FSUtils.removeDirectoryRecursive(target.path);
+                            FSUtils.removeDirectoryRecursive(target.path);
                         } else {
                             await uUnlink(target.path);
                         }
-                        // reload tree
-                        const root = await fetchDirContent("/");
-                        root.expanded = true;
-                        dispatch({ type: "set", roots: [root] });
-                        setFilteredTree([root]);
+                        await refreshTreePreservingExpansion(false);
                         setSelectedFile(null);
                     }
                 });
                 break;
         }
     };
-
-    async function reloadPlugin(path: string) {
-        const p = pathLib();
-        const parsed = p?.parse?.(path) ?? { dir: "", name: "" };
-        const plugin = getGlobalApi()
-            .Plugins.getAll()
-            .find((pl: any) => pl.sourcePath === parsed.dir && pl.filename === parsed.name);
-        if (!plugin) return;
-
-        Vencord.Plugins.stopPlugin(plugin as Plugin);
-        delete (Vencord.Plugins as any).plugins[plugin.name];
-
-        let code = "";
-        try {
-            code = (await uReadFile(path, "utf8")) as string;
-        } catch (e) {
-            compat_logger.error("Failed to read plugin for reload", e);
-            return;
-        }
-        const converted = await convertPlugin(code, parsed.name, true, parsed.dir);
-        await addCustomPlugin(converted);
-    }
-
     return (
         <SettingsTab title={TabName}>
             <Paragraph title="File System Actions">
@@ -626,11 +854,9 @@ function FileSystemTab() {
                     <QuickAction text="Export Filesystem as ZIP" action={() => ZIPUtils.downloadZip()} Icon={FolderIcon} />
                     <QuickAction text="Import Filesystem From ZIP" action={() => ZIPUtils.importZip()} Icon={FolderIcon} />
                     <QuickAction text="Reload BD Plugins" action={() => reloadCompatLayer()} Icon={RestartIcon} />
-                    <QuickAction text="Import BD Plugin" action={async () => await FSUtils.importFile("/BD/plugins", true, false, ".js")} Icon={PlusIcon} />
-                    <QuickAction text="Import Bulk Plugins" action={async () => await FSUtils.importFile("/BD/plugins", true, true, ".js")} Icon={FolderIcon} />
+                    <QuickAction text="Import BD Plugin/s" action={() => handlePluginImport(true)} Icon={FolderIcon} />
                 </QuickActionCard>
             </Paragraph>
-
             <Paragraph>
                 <div style={{ position: "relative" }}>
                     <TextInput value={searchQuery} onChange={setSearchQuery} placeholder="Search files and folders..." className={cl("search")} />
@@ -647,31 +873,80 @@ function FileSystemTab() {
                             }}
                         >
                             {searchLoading ? (
-                                <Text variant="text-xs/normal" color="text-muted">
+                                <Span size="xs" weight="normal">
                                     ⏳ searching...
-                                </Text>
+                                </Span>
                             ) : (
-                                <Text variant="text-xs/normal" color="text-muted">
+                                <Span size="xs" weight="normal">
                                     {searchResultCount} results
-                                </Text>
+                                </Span>
                             )}
-                            <Button look={Button.Looks.FILLED} size={Button.Sizes.MIN} onClick={() => setSearchQuery("")} className={cl("clear-btn")} style={{ padding: "4px", minHeight: "auto" }}>
+                            <Button size="min" onClick={() => setSearchQuery("")} className={cl("clear-btn")} style={{ padding: "4px", minHeight: "auto" }}>
                                 ✕
                             </Button>
                         </div>
                     )}
                 </div>
+                <div className={cl("sort-row")}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        <span style={{ fontSize: "12px", opacity: 0.7 }}>Sort</span>
+                        <select
+                            value={sortKey}
+                            onChange={e => setSortKey(e.target.value as SortKey)}
+                            className={cl("sort-select")}
+                            aria-label="Sort by"
+                        >
+                            <option value="name">Name</option>
+                            <option value="mtime">Date</option>
+                            <option value="size">Size</option>
+                        </select>
+                        <Button size="min" onClick={() => setSortDir(d => d === "asc" ? "desc" : "asc")} title={`Toggle (${sortDir})`}>
+                            {sortDir === "asc" ? "↑" : "↓"}
+                        </Button>
+                    </div>
+                    {/* Selection controls */}
+                    <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                        <Button
+                            variant={selectionMode ? "secondary" : "primary"}
+                            size="small"
+                            onClick={() => {
+                                if (selectionMode) {
+                                    clearSelection();
+                                } else {
+                                    setSelectionMode(true);
+                                }
+                            }}
+                        >
+                            {selectionMode ? "Cancel Selection" : "Select Multiple Files"}
+                        </Button>
+                        {selectionMode && (
+                            <>
+                                <Span size="xs" weight="normal">
+                                    {selectedFiles.size} selected
+                                </Span>
+                                {selectedFiles.size > 0 && (
+                                    <Button
+                                        variant="dangerPrimary"
+                                        size="small"
+                                        onClick={handleBulkDelete}
+                                    >
+                                        Delete Selected ({selectedFiles.size})
+                                    </Button>
+                                )}
+                            </>
+                        )}
+                    </div>
+                </div>
             </Paragraph>
-
             <Card className={cl("container")}>
                 <div className={cl("split-view")}>
                     <div className={cl("file-browser")} role="tree" aria-label="File tree">
                         {/* Storage Widget */}
                         <Card className={cl("storage-widget")}>
                             <div className={cl("storage-header")}>
-                                <Text variant="text-xs/semibold" className={cl("storage-label")}>
+                                <Span size="xs" weight="semibold" className={cl("storage-label")}>
                                     STORAGE
-                                </Text>
+                                </Span>
                                 <Tooltip text="Current storage backend - change in plugin settings (requires restart)">
                                     {props => (
                                         <div {...props} className={cl("storage-badge")} style={{ background: backend.color }}>
@@ -694,50 +969,67 @@ function FileSystemTab() {
                                     }}
                                 />
                             </div>
-                            <Text variant="text-xs/normal" color="text-muted">
+                            <Span size="xs" weight="normal">
                                 {formatBytes(storageUsed)} {backend.kind !== "RealFS" && storageTotal ? ` / ${formatBytes(storageTotal)} used` : " used"}
-                            </Text>
+                            </Span>
                         </Card>
-
                         {/* File Tree */}
-                        <ScrollerThin className={cl("tree-container")}>
-                            {filteredTree.length > 0 ? (
-                                <FileTree
-                                    nodes={filteredTree}
-                                    searchQuery={debouncedSearch}
-                                    selectedFile={selectedFile}
-                                    onSelectFile={setSelectedFile}
-                                    onLoadChildren={fetchDirContent}
-                                    onChildrenLoaded={handleChildrenLoaded}
-                                    onToggleExpand={handleToggleExpand}
-                                />
-                            ) : searchQuery ? (
-                                <div style={{ padding: "20px", textAlign: "center" }}>
-                                    <Text variant="text-sm/normal" color="text-muted">
-                                        No results found for "{searchQuery}"
-                                    </Text>
-                                    <br />
-                                    <Text variant="text-xs/normal" color="text-muted">
-                                        Try searching by path, e.g., "plugins/"
-                                    </Text>
+                        <div
+                            className={`${cl("dropzone")} ${isDropping ? cl("dropping") : ""}`}
+                            role="application"
+                            onDragEnter={onDragEnter}
+                            onDragOver={onDragOver}
+                            onDragLeave={onDragLeave}
+                            onDrop={onDrop}
+                            title="Drop .plugin.js files to import into /BD/plugins"
+                            aria-label="Import BD plugins by dropping .plugin.js files"
+                        >
+                            <ScrollerThin className={cl("tree-container")}>
+                                {filteredTree.length > 0 ? (
+                                    <FileTree
+                                        nodes={filteredTree}
+                                        searchQuery={debouncedSearch}
+                                        selectedFile={selectedFile}
+                                        onSelectFile={setSelectedFile}
+                                        onLoadChildren={fetchDirContent}
+                                        onChildrenLoaded={handleChildrenLoaded}
+                                        onToggleExpand={handleToggleExpand}
+                                        recentMarks={recentMarks}
+                                        selectionMode={selectionMode}
+                                        selectedFiles={selectedFiles}
+                                        onToggleSelection={toggleFileSelection}
+                                    />
+                                ) : searchQuery ? (
+                                    <div style={{ padding: "20px", textAlign: "center" }}>
+                                        <Paragraph size="sm">
+                                            No results found for "{searchQuery}"
+                                        </Paragraph>
+                                        <br />
+                                        <Paragraph size="xs">
+                                            Try searching by path, e.g. "plugins/"
+                                        </Paragraph>
+                                    </div>
+                                ) : (
+                                    <Paragraph size="sm" style={{ padding: "20px", textAlign: "center" }}>
+                                        Loading file system.
+                                    </Paragraph>
+                                )}
+                            </ScrollerThin>
+                            {isDropping && (
+                                <div className={cl("drop-overlay")}>
+                                    <div className={cl("drop-label")}>Drop .plugin.js files to import</div>
                                 </div>
-                            ) : (
-                                <Text variant="text-sm/normal" color="text-muted" style={{ padding: "20px", textAlign: "center" }}>
-                                    Loading file system...
-                                </Text>
                             )}
-                        </ScrollerThin>
+                        </div>
                     </div>
-
                     {/* Details Panel */}
                     {selectedFile && (
                         <Card className={cl("details-panel")}>
                             <div className={cl("details-header")}>
-                                <Text variant="heading-md/semibold" className={cl("details-filename")} title={selectedFile.name}>
+                                <BaseText tag="h3" size="md" weight="semibold" className={cl("details-filename")} title={selectedFile.name}>
                                     {selectedFile.name}
-                                </Text>
+                                </BaseText>
                             </div>
-
                             <TabBar type="top" look="brand" className="vc-settings-tab-bar" selectedItem={currentDetailTab} onItemSelect={setCurrentDetailTab}>
                                 <TabBar.Item className="vc-settings-tab-bar-item" id={DetailTab.PREVIEW}>
                                     Preview
@@ -749,7 +1041,6 @@ function FileSystemTab() {
                                     History
                                 </TabBar.Item>
                             </TabBar>
-
                             <div className={cl("tab-content")}>
                                 {currentDetailTab === DetailTab.PREVIEW && <FilePreview file={selectedFile} onSaved={async () => {
                                     if (selectedFile?.name.endsWith(".plugin.js")) {
@@ -758,22 +1049,21 @@ function FileSystemTab() {
                                 }} />}
                                 {currentDetailTab === DetailTab.PROPERTIES && <FileProperties file={selectedFile} />}
                                 {currentDetailTab === DetailTab.HISTORY && (
-                                    <Text variant="text-sm/normal" color="text-muted">
+                                    <Paragraph size="sm">
                                         Version history not available
-                                    </Text>
+                                    </Paragraph>
                                 )}
                             </div>
-
                             <div className={cl("actions")}>
                                 {selectedFile.name.endsWith(".plugin.js") && (
-                                    <Button color={Button.Colors.BRAND} size={Button.Sizes.SMALL} onClick={() => handleFileAction("reload")}>
+                                    <Button variant="primary" size="small" onClick={() => handleFileAction("reload")}>
                                         Reload Plugin
                                     </Button>
                                 )}
-                                <Button look={Button.Looks.FILLED} size={Button.Sizes.SMALL} onClick={() => handleFileAction("export")}>
+                                <Button size="small" onClick={() => handleFileAction("export")}>
                                     Export
                                 </Button>
-                                <Button color={Button.Colors.RED} look={Button.Looks.FILLED} size={Button.Sizes.SMALL} onClick={() => handleFileAction("delete")}>
+                                <Button variant="dangerPrimary" size="small" onClick={() => handleFileAction("delete")}>
                                     Delete
                                 </Button>
                             </div>
@@ -781,7 +1071,6 @@ function FileSystemTab() {
                     )}
                 </div>
             </Card>
-
             <style>{`
             .${cl("search")} { margin-bottom: 16px; }
             .${cl("container")} { min-height: 50vh; }
@@ -797,7 +1086,7 @@ function FileSystemTab() {
             .${cl("tree-node")} { display: flex; align-items: center; gap: 0.5rem; padding: 0.25rem 0.5rem; border-radius: 0.25rem; cursor: pointer; transition: background 0.15s ease; user-select: none; }
             .${cl("tree-node")}:hover { background: var(--background-modifier-hover); }
             .${cl("tree-node")}.${cl("selected")} { background: var(--background-modifier-selected); }
-            .${cl("tree-chevron")} { width: 1rem; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; color: var(--interactive-normal); transition: transform 0.15s ease; }
+            .${cl("tree-chevron")} { width: 1rem; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; color: var(--interactive-normal); transition: transform 0.15s ease; border: none; padding: 0; margin: 0; background: transparent; cursor: pointer; }
             .${cl("tree-chevron")}.${cl("expanded")} { transform: rotate(90deg); }
             .${cl("tree-chevron")}.${cl("invisible")} { visibility: hidden; }
             .${cl("tree-icon")} { flex-shrink: 0; }
@@ -829,15 +1118,27 @@ function FileSystemTab() {
             .${cl("detached-editor-body")} { flex: 1 1 auto; min-height: 0; }
             .${cl("detached-editor-body")} .monaco-editor, .${cl("detached-editor-body")} .monaco-editor .overflow-guard { width: 100% !important; height: 100% !important; }
             .${cl("monaco-line-changed")} { width: 3px; background: var(--brand-500, #f5a623); }
-
+            .${cl("dropzone")} { position: relative; }
+            .${cl("drop-overlay")} { position: absolute; inset: 0; border: 2px dashed var(--status-positive); display: grid; place-items: center; pointer-events: none; background: rgba(0,0,0,0.25); border-radius: 8px; animation: bd-drop-fade 120ms ease-out; }
+            .${cl("drop-label")} { padding: 8px 12px; border-radius: 999px; background: var(--background-primary); }
+            @keyframes bd-drop-fade { from { opacity: .0; } to { opacity: 1; } }
+            .${cl("sort-row")} { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 6px 0 12px; }
+            .${cl("sort-select")} { background: var(--text-tertiary); border: 1px solid var(--background-accent); border-radius: 6px; padding: 2px 8px; }
+            /* badges next to changed plugin files */
+            .${cl("badge")} { display:inline-block; padding:0.125rem 0.375rem; border-radius:0.25rem; font-size:0.625rem; font-weight:700; text-transform:uppercase; letter-spacing:0.025em; flex-shrink:0; }
+            .${cl("badge-new")} { background:var(--green-500); color:var(--white-500); }
+            .${cl("badge-upd")} { background:var(--brand-500); color:var(--white-500); }
+            .${cl("tree-node")}.${cl("selected-multi")} { background:var(--background-modifier-selected); outline:1px solid color-mix(in srgb, var(--brand-500) 40%, transparent); }
             `}</style>
         </SettingsTab>
     );
 }
-
 /** ---------- UI helpers ---------- */
-
-function HighlightMatch({ text, query }: { text: string; query: string; }) {
+type HighlightMatchProps = Readonly<{
+    text: string;
+    query: string;
+}>;
+function HighlightMatch({ text, query }: HighlightMatchProps) {
     if (!query) return <>{text}</>;
     const idx = text.toLowerCase().indexOf(query.toLowerCase());
     if (idx < 0) return <>{text}</>;
@@ -849,16 +1150,7 @@ function HighlightMatch({ text, query }: { text: string; query: string; }) {
         </>
     );
 }
-
-function FileTree({
-    nodes,
-    searchQuery,
-    selectedFile,
-    onSelectFile,
-    onLoadChildren,
-    onChildrenLoaded,
-    onToggleExpand
-}: {
+type FileTreeProps = Readonly<{
     nodes: FileNode[];
     searchQuery: string;
     selectedFile: FileNode | null;
@@ -866,7 +1158,24 @@ function FileTree({
     onLoadChildren: (path: string) => Promise<FileNode>;
     onChildrenLoaded: (path: string, children: FileNode[]) => void;
     onToggleExpand: (path: string, expanded: boolean) => void;
-}) {
+    recentMarks: Record<string, ChangeMark>;
+    selectionMode?: boolean;
+    selectedFiles?: Set<string>;
+    onToggleSelection?: (path: string) => void;
+}>;
+function FileTree({
+    nodes,
+    searchQuery,
+    selectedFile,
+    onSelectFile,
+    onLoadChildren,
+    onChildrenLoaded,
+    onToggleExpand,
+    recentMarks,
+    selectionMode = false,
+    selectedFiles = new Set(),
+    onToggleSelection = () => { }
+}: FileTreeProps) {
     return (
         <>
             {nodes.map(node => (
@@ -880,22 +1189,16 @@ function FileTree({
                     onChildrenLoaded={onChildrenLoaded}
                     onToggleExpand={onToggleExpand}
                     depth={0}
+                    recentMarks={recentMarks}
+                    selectionMode={selectionMode}
+                    selectedFiles={selectedFiles}
+                    onToggleSelection={onToggleSelection}
                 />
             ))}
         </>
     );
 }
-
-function FileTreeNode({
-    node,
-    searchQuery,
-    selected,
-    onSelect,
-    onLoadChildren,
-    onChildrenLoaded,
-    onToggleExpand,
-    depth
-}: {
+type FileTreeNodeProps = Readonly<{
     node: FileNode;
     searchQuery: string;
     selected: boolean;
@@ -904,15 +1207,31 @@ function FileTreeNode({
     onChildrenLoaded: (path: string, children: FileNode[]) => void;
     onToggleExpand: (path: string, expanded: boolean) => void;
     depth: number;
-}) {
+    recentMarks: Record<string, ChangeMark>;
+    selectionMode?: boolean;
+    selectedFiles?: Set<string>;
+    onToggleSelection?: (path: string) => void;
+}>;
+function FileTreeNode({
+    node,
+    searchQuery,
+    selected,
+    onSelect,
+    onLoadChildren,
+    onChildrenLoaded,
+    onToggleExpand,
+    depth,
+    recentMarks,
+    selectionMode = false,
+    selectedFiles = new Set(),
+    onToggleSelection = () => { }
+}: FileTreeNodeProps) {
     const [expanded, setExpanded] = useState(!!node.expanded);
     const [children, setChildren] = useState<FileNode[] | undefined>(node.children);
-
     useEffect(() => {
         setExpanded(!!node.expanded);
         setChildren(node.children ?? undefined);
     }, [node.expanded, node.children, node.id]);
-
     const handleToggle = async (e: any) => {
         e.stopPropagation();
         const next = !expanded;
@@ -920,38 +1239,68 @@ function FileTreeNode({
             const loaded = await onLoadChildren(node.path);
             const kids = loaded.children ?? [];
             setChildren(kids);
-            onChildrenLoaded?.(node.path, kids); // lift to parent state
+            onChildrenLoaded?.(node.path, kids);
         }
         setExpanded(next);
         onToggleExpand?.(node.path, next);
     };
+    const mark = recentMarks[node.path];
+    const isSelected = selectedFiles.has(node.path);
+    const handleSelect = () => onSelect(node);
+    const handleToggleSelection = () => onToggleSelection(node.path);
+
+    const handleActivate = selectionMode ? handleToggleSelection : handleSelect;
 
     return (
         <>
             <div
-                className={`${cl("tree-node")} ${selected ? cl("selected") : ""}`}
-                onClick={() => onSelect(node)}
+                className={`${cl("tree-node")} ${selected ? cl("selected") : ""} ${isSelected ? cl("selected-multi") : ""}`}
+                onClick={handleActivate}
+                onKeyDown={e => {
+                    if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        handleActivate();
+                    }
+                }}
                 role="treeitem"
                 aria-selected={selected}
                 aria-expanded={node.isDirectory ? expanded : undefined}
+                tabIndex={selected ? 0 : -1}
                 style={{ paddingLeft: `calc(${depth * 1.5}rem + var(--spacing-8))` }}
             >
+                {selectionMode && (
+                    <input
+                        type="checkbox"
+                        aria-label={`Select ${node.name}`}
+                        checked={isSelected}
+                        onChange={e => {
+                            e.stopPropagation();
+                            onToggleSelection(node.path);
+                        }}
+                        style={{ marginRight: "4px", cursor: "pointer" }}
+                    />
+                )}
                 {node.isDirectory ? (
-                    <span className={`${cl("tree-chevron")} ${expanded ? cl("expanded") : ""}`} onClick={handleToggle}>
+                    <button
+                        type="button"
+                        className={`${cl("tree-chevron")} ${expanded ? cl("expanded") : ""}`}
+                        onClick={handleToggle}
+                        aria-label={expanded ? "Collapse folder" : "Expand folder"}
+                    >
                         ▶
-                    </span>
+                    </button>
                 ) : (
                     <span className={`${cl("tree-chevron")} ${cl("invisible")}`} />
                 )}
                 <span className={cl("tree-icon")}>{node.isDirectory ? (expanded ? "📂" : "📁") : getFileIcon(node.name)}</span>
-                <Text variant="text-sm/normal" className={cl("tree-label")} title={node.name}>
+                <Span size="sm" weight="normal" className={cl("tree-label")} title={node.name}>
                     <HighlightMatch text={node.name} query={searchQuery} />
-                </Text>
-                {/* Size is fetched in Properties, but preserve existing display if available */}
+                </Span>
+                {mark && <span className={`${cl("badge")} ${mark === "new" ? cl("badge-new") : cl("badge-upd")}`}>{mark === "new" ? "NEW" : "UPDATED"}</span>}
                 {node.size !== undefined && <span className={cl("tree-size")}>{formatBytes(node.size)}</span>}
             </div>
             {expanded && (
-                <div className={cl("tree-children")} role="group">
+                <div className={cl("tree-children")}>
                     {(children ?? []).map(child => (
                         <FileTreeNode
                             key={child.id}
@@ -963,6 +1312,10 @@ function FileTreeNode({
                             onChildrenLoaded={onChildrenLoaded}
                             onToggleExpand={onToggleExpand}
                             depth={depth + 1}
+                            recentMarks={recentMarks}
+                            selectionMode={selectionMode}
+                            selectedFiles={selectedFiles}
+                            onToggleSelection={onToggleSelection}
                         />
                     ))}
                 </div>
@@ -970,9 +1323,75 @@ function FileTreeNode({
         </>
     );
 }
-
+/** ---------- Inline Monaco Viewer for large files ---------- */
+type InlineMonacoViewerProps = Readonly<{
+    value: string;
+    language: string;
+    readOnly?: boolean;
+    height?: string;
+}>;
+function InlineMonacoViewer({
+    value,
+    language,
+    readOnly = true,
+    height = "400px"
+}: InlineMonacoViewerProps) {
+    const hostRef = React.useRef<HTMLDivElement | null>(null);
+    const editorRef = React.useRef<any>(null);
+    const modelRef = React.useRef<any>(null);
+    const [monacoReady, setMonacoReady] = React.useState(false);
+    React.useEffect(() => {
+        let disposed = false;
+        (async () => {
+            const monaco = await ensureMonaco();
+            if (!monaco || !hostRef.current || disposed) return;
+            await ensureMonacoWorkers(monaco);
+            await ensureMonacoStyles(monaco.version);
+            const monacoLang = language || "plaintext";
+            await ensureMonacoLanguage(monaco, monacoLang);
+            const dark = document.documentElement.classList.contains("theme-dark")
+                || document.body.classList.contains("theme-dark");
+            monaco.editor.setTheme(dark ? "vs-dark" : "vs");
+            modelRef.current = monaco.editor.createModel(value, monacoLang);
+            editorRef.current = monaco.editor.create(hostRef.current, {
+                model: modelRef.current,
+                automaticLayout: true,
+                minimap: { enabled: true },
+                wordWrap: "on",
+                scrollBeyondLastLine: false,
+                readOnly,
+                tabSize: 2,
+                fontSize: 13,
+                lineNumbers: "on",
+                glyphMargin: false,
+                lineDecorationsWidth: 0
+            });
+            setMonacoReady(true);
+        })();
+        return () => {
+            disposed = true;
+            setMonacoReady(false);
+            try { editorRef.current?.dispose?.(); } catch { }
+            try { modelRef.current?.dispose?.(); } catch { }
+        };
+    }, [value, language, readOnly]);
+    return (
+        <div style={{ height, border: "1px solid var(--background-modifier-accent)", borderRadius: "0.5rem" }}>
+            <div ref={hostRef} style={{ width: "100%", height: "100%" }} />
+            {!monacoReady && (
+                <div style={{ padding: "20px", textAlign: "center" }}>
+                    <Paragraph size="sm">Loading Monaco editor...</Paragraph>
+                </div>
+            )}
+        </div>
+    );
+}
 /** ---------- File Preview (with editor & blob previews) ---------- */
-function FilePreview({ file, onSaved }: { file: FileNode; onSaved?: () => void | Promise<void>; }) {
+type FilePreviewProps = Readonly<{
+    file: FileNode;
+    onSaved?: () => void | Promise<void>;
+}>;
+function FilePreview({ file, onSaved }: FilePreviewProps) {
     const [content, setContent] = useState<string>("");
     const [blobUrl, setBlobUrl] = useState<string>("");
     const [isLoading, setIsLoading] = useState(true);
@@ -980,34 +1399,43 @@ function FilePreview({ file, onSaved }: { file: FileNode; onSaved?: () => void |
     const [editorValue, setEditorValue] = useState("");
     const [dirty, setDirty] = useState(false);
     const [saving, setSaving] = useState(false);
+    const [isTruncated, setIsTruncated] = useState(false);
+    const [fileByteSize, setFileByteSize] = useState<number | null>(null);
     const saveTimer = useRef<number | null>(null);
-
+    const MONACO_THRESHOLD = 50000;
+    const MAX_PREVIEW_SIZE = 500000;
     const ext = useMemo(() => getExt(file.name), [file.name]);
     const info = useMemo(() => extInfo(ext), [ext]);
     const previewType = info.preview;
     const language = info.lang || inferLanguageFromName(file.name) || "plaintext";
-
+    const shouldUseMonaco = useMemo(() => {
+        return content.length > MONACO_THRESHOLD &&
+            (previewType === "code" || previewType === "text");
+    }, [content.length, previewType]);
     useEffect(() => {
         let disposed = false;
         (async () => {
             setIsLoading(true);
             setIsEditing(false);
             setDirty(false);
+            setIsTruncated(false);
             setBlobUrl(old => {
                 if (old) URL.revokeObjectURL(old);
                 return "";
             });
             try {
                 if (file.isDirectory) return;
-
-                // For visual previews, always provide a blob URL (binary or text-backed)
                 if (previewType === "image" || previewType === "video" || previewType === "audio" || previewType === "pdf") {
                     const type = info.mime || "application/octet-stream";
-                    if (info.binary !== false) {
+                    if (info.binary === true) {
                         const buf = (await uReadFile(file.path)) as Uint8Array;
-                        const ab: ArrayBuffer = new Uint8Array(buf as Uint8Array).buffer;
+                        const ab: ArrayBuffer = new Uint8Array(buf).buffer;
                         const url = URL.createObjectURL(new Blob([ab], { type }));
                         if (!disposed) setBlobUrl(url);
+                        try {
+                            const st = await uStat(file.path);
+                            if (!disposed) setFileByteSize(st?.size ?? null);
+                        } catch { /* ignore */ }
                     } else {
                         const text = (await uReadFile(file.path, "utf8")) as string;
                         const url = URL.createObjectURL(new Blob([text], { type }));
@@ -1016,14 +1444,26 @@ function FilePreview({ file, onSaved }: { file: FileNode; onSaved?: () => void |
                             setContent(text);
                             setEditorValue(formatMaybeJSON(ext, text));
                         }
+                        try {
+                            const st = await uStat(file.path);
+                            if (!disposed) setFileByteSize(st?.size ?? null);
+                        } catch { /* ignore */ }
                     }
                 } else {
                     const text = (await uReadFile(file.path, "utf8")) as string;
-                    const sliced = text;
+                    let sliced = text;
+                    if (text.length > MAX_PREVIEW_SIZE) {
+                        sliced = text.slice(0, MAX_PREVIEW_SIZE);
+                        if (!disposed) setIsTruncated(true);
+                    }
                     if (!disposed) {
                         setContent(sliced);
                         setEditorValue(formatMaybeJSON(ext, sliced));
                     }
+                    try {
+                        const st = await uStat(file.path);
+                        if (!disposed) setFileByteSize(st?.size ?? null);
+                    } catch { /* ignore */ }
                 }
             } catch (e) {
                 compat_logger.error("Failed to read file:", e);
@@ -1038,30 +1478,22 @@ function FilePreview({ file, onSaved }: { file: FileNode; onSaved?: () => void |
         return () => {
             disposed = true;
             if (blobUrl) URL.revokeObjectURL(blobUrl);
-            if (saveTimer.current) window.clearTimeout(saveTimer.current);
+            if (saveTimer.current) globalThis.clearTimeout(saveTimer.current);
         };
     }, [file.path]);
-
-    // Autosave (debounced)
     const scheduleAutosave = () => {
-        if (saveTimer.current) window.clearTimeout(saveTimer.current);
+        if (saveTimer.current) globalThis.clearTimeout(saveTimer.current);
         saveTimer.current = window.setTimeout(async () => {
             await doSave();
         }, 1000);
     };
-
     async function doSave(valueOverride?: string) {
-        // If a value is provided (from Monaco), use it; otherwise use the textarea state
         const dataToWrite = valueOverride ?? editorValue;
-
-        // When saving from Monaco, we’re not in "isEditing" textarea mode — don’t block saving
         if (valueOverride == null && (!isEditing || !dirty)) return;
-
         setSaving(true);
         try {
             await uWriteFileAtomic(file.path, dataToWrite);
             if (valueOverride != null) {
-                // Keep React state in sync with what Monaco wrote
                 setEditorValue(valueOverride);
             }
             setDirty(false);
@@ -1073,7 +1505,6 @@ function FilePreview({ file, onSaved }: { file: FileNode; onSaved?: () => void |
             setSaving(false);
         }
     }
-
     function openDetachedMonaco() {
         openModal(props => (
             <ModalRoot {...props} size={ModalSize.DYNAMIC}>
@@ -1081,74 +1512,148 @@ function FilePreview({ file, onSaved }: { file: FileNode; onSaved?: () => void |
                     name={file.name}
                     value={editorValue}
                     language={language}
-                    onChange={() => { /* keep typing snappy; no sync needed */ }}
+                    onChange={() => { /* keep typing snappy. no sync needed */ }}
                     onSave={newValue => doSave(newValue)}
                     onClose={props.onClose}
                 />
             </ModalRoot>
         ));
     }
+    if (isLoading) return <Paragraph size="sm">Loading preview...</Paragraph>;
+    if (file.isDirectory) return <Paragraph size="sm">Select a file to preview</Paragraph>;
+    const sizeBytes = fileByteSize ?? content.length;
+    const fileSizeKB = sizeBytes / 1024;
+    const fileSizeStr = fileSizeKB > 1024
+        ? `${(fileSizeKB / 1024).toFixed(1)}MB`
+        : `${fileSizeKB.toFixed(1)}KB`;
+    const renderEditorBody = () => {
+        if (isEditing) {
+            return (
+                <textarea
+                    className={cl("editor-textarea")}
+                    spellCheck={false}
+                    value={editorValue}
+                    onChange={e => {
+                        setEditorValue(e.target.value);
+                        setDirty(true);
+                        scheduleAutosave();
+                    }}
+                />
+            );
+        }
 
+        if (shouldUseMonaco && info.preview === "code") {
+            return (
+                <InlineMonacoViewer
+                    value={editorValue}
+                    language={language}
+                    readOnly={true}
+                    height="500px"
+                />
+            );
+        }
 
-    if (isLoading) return <Text variant="text-sm/normal" color="text-muted">Loading preview...</Text>;
-    if (file.isDirectory) return <Text variant="text-sm/normal" color="text-muted">Select a file to preview</Text>;
+        if (info.preview === "code") {
+            return (
+                <pre className={cl("preview-code")}>
+                    <code
+                        className={`language-${language} hljs`}
+                        dangerouslySetInnerHTML={{ __html: safeHighlight(language, editorValue) }}
+                    />
+                </pre>
+            );
+        }
 
-    // Editor UI for text/code
+        if (info.preview === "markdown") {
+            return <div className={cl("preview-markdown")}>{Parser.parse(content)}</div>;
+        }
+
+        return (
+            <pre className={cl("preview-code")}>
+                <code>{content || "Empty file"}</code>
+            </pre>
+        );
+    };
+
     const editorUi =
         info.preview === "code" || info.preview === "markdown" || info.preview === "text" ? (
             <div className={cl("editor-wrap")}>
+                {/* File size badge and warnings */}
+                {(fileSizeKB > 50 || isTruncated) && (
+                    <div
+                        style={{
+                            marginBottom: "8px",
+                            display: "flex",
+                            gap: "8px",
+                            alignItems: "center",
+                            flexWrap: "wrap"
+                        }}
+                    >
+                        <span
+                            style={{
+                                padding: "2px 8px",
+                                borderRadius: "4px",
+                                fontSize: "11px",
+                                background: "var(--background-modifier-accent)",
+                                color: "var(--text-muted)"
+                            }}
+                        >
+                            {fileSizeStr}
+                        </span>
+                        {shouldUseMonaco && (
+                            <span
+                                style={{
+                                    padding: "2px 8px",
+                                    borderRadius: "4px",
+                                    fontSize: "11px",
+                                    background: "var(--info-positive-background)",
+                                    color: "var(--info-positive-foreground)"
+                                }}
+                            >
+                                Monaco Editor (optimized for large files)
+                            </span>
+                        )}
+                        {isTruncated && (
+                            <span
+                                style={{
+                                    padding: "2px 8px",
+                                    borderRadius: "4px",
+                                    fontSize: "11px",
+                                    background: "var(--status-warning)",
+                                    color: "white"
+                                }}
+                            >
+                                Truncated at 500KB
+                            </span>
+                        )}
+                    </div>
+                )}
                 <div className={cl("editor-toolbar")}>
-                    <Button size={Button.Sizes.SMALL} color={isEditing ? Button.Colors.GREEN : Button.Colors.BRAND} onClick={() => setIsEditing(e => !e)}>
+                    <Button size="small" variant={isEditing ? "positive" : "primary"} onClick={() => setIsEditing(e => !e)}>
                         {isEditing ? "Stop Editing" : "Edit"}
                     </Button>
-
-                    <Button
-                        size={Button.Sizes.SMALL}
-                        look={Button.Looks.FILLED}
-                        onClick={openDetachedMonaco}
-                    >
+                    <Button size="small" onClick={openDetachedMonaco}>
                         Detach
                     </Button>
-
                     {isEditing && (
                         <>
-                            <Button size={Button.Sizes.SMALL} look={Button.Looks.FILLED} onClick={() => {
-                                void doSave();
-                            }}
-                                disabled={!dirty || saving}>
+                            <Button
+                                size="small"
+                                onClick={() => {
+                                    void doSave();
+                                }}
+                                disabled={!dirty || saving}
+                            >
                                 {saving ? "Saving…" : "Save"}
                             </Button>
-                            <Text variant="text-xs/normal" color="text-muted">
-                                Autosaves after 1s idle {dirty && <span className={cl("dirty-dot")} title="Unsaved changes" />}
-                            </Text>
+                            <Span size="xs" weight="normal">
+                                Autosaves after 1s idle{" "}
+                                {dirty && <span className={cl("dirty-dot")} title="Unsaved changes" />}
+                            </Span>
                         </>
                     )}
                 </div>
-                {isEditing ? (
-                    <textarea
-                        className={cl("editor-textarea")}
-                        spellCheck={false}
-                        value={editorValue}
-                        onChange={e => {
-                            setEditorValue(e.target.value);
-                            setDirty(true);
-                            scheduleAutosave();
-                        }}
-                    />
-                ) : info.preview === "code" ? (
-                    <pre className={cl("preview-code")}>
-                        <code
-                            className={`language-${language} hljs`}
-                            dangerouslySetInnerHTML={{ __html: safeHighlight(language, editorValue) }}
-                        />
-                    </pre>
-                ) : info.preview === "markdown" ? (
-                    <div className={cl("preview-markdown")}>{Parser.parse(content)}</div>
-                ) : (
-                    <pre className={cl("preview-code")}>
-                        <code>{content || "Empty file"}</code>
-                    </pre>
-                )}
+                {renderEditorBody()}
             </div>
         ) : null;
 
@@ -1156,24 +1661,65 @@ function FilePreview({ file, onSaved }: { file: FileNode; onSaved?: () => void |
         case "image":
             return (
                 <div className={cl("preview-image")}>
-                    <img src={blobUrl} alt={file.name} onClick={() => openImageModal(blobUrl, file.name)} style={{ cursor: "zoom-in" }} loading="lazy" />
+                    <button
+                        type="button"
+                        onClick={() => openImageModal(blobUrl, file.name)}
+                        aria-label={`Open preview of ${file.name}`}
+                        style={{
+                            padding: 0,
+                            margin: 0,
+                            border: "none",
+                            background: "none",
+                            cursor: "zoom-in"
+                        }}
+                    >
+                        <img
+                            src={blobUrl}
+                            alt={file.name}
+                            style={{ maxWidth: "100%", maxHeight: "20rem", borderRadius: "0.5rem", boxShadow: "0 0.125rem 0.5rem rgba(0,0,0,0.2)" }}
+                            loading="lazy"
+                        />
+                    </button>
                 </div>
             );
         case "video":
-            return <video controls style={{ width: "100%", maxHeight: "20rem", borderRadius: "0.5rem" }} src={blobUrl} />;
+            return (
+                <video
+                    controls
+                    style={{ width: "100%", maxHeight: "20rem", borderRadius: "0.5rem" }}
+                    src={blobUrl}
+                >
+                    <track kind="captions" src="" label="No captions available" />
+                </video>
+            );
         case "audio":
             return (
                 <div style={{ padding: "1rem" }}>
-                    <audio controls style={{ width: "100%" }} src={blobUrl} />
+                    <audio controls style={{ width: "100%" }} src={blobUrl}>
+                        <track kind="captions" src="" label="No captions available" />
+                    </audio>
                 </div>
             );
         case "pdf":
-            return <iframe src={blobUrl} style={{ width: "100%", height: "400px", border: "none", borderRadius: "0.5rem", background: "white" }} title={file.name} />;
+            return (
+                <iframe
+                    src={blobUrl}
+                    style={{ width: "100%", height: "400px", border: "none", borderRadius: "0.5rem", background: "white" }}
+                    title={file.name}
+                />
+            );
         default:
             return editorUi as any;
     }
 }
-
+type DetachedMonacoEditorProps = Readonly<{
+    name: string;
+    value: string;
+    language: string;
+    onChange: (v: string) => void;
+    onSave: (content: string) => void | Promise<void>;
+    onClose: () => void;
+}>;
 function DetachedMonacoEditor({
     name,
     value,
@@ -1181,35 +1727,19 @@ function DetachedMonacoEditor({
     onChange,
     onSave,
     onClose
-}: {
-    name: string;
-    value: string;
-    language: string;
-    onChange: (v: string) => void;
-    onSave: (content: string) => void | Promise<void>;
-    onClose: () => void;
-}) {
-
-
+}: DetachedMonacoEditorProps) {
     const hostRef = React.useRef<HTMLDivElement | null>(null);
     const editorRef = React.useRef<any>(null);
     const modelRef = React.useRef<any>(null);
-
-    // Dirty / change tracking
     const [isDirty, setIsDirty] = React.useState(false);
     const [confirmOpen, setConfirmOpen] = React.useState(false);
     const savedVersionRef = React.useRef<number>(0);
     const decoIdsRef = React.useRef<string[]>([]);
-
-    // Track if Monaco is ready
     const [monacoReady, setMonacoReady] = React.useState(false);
-
-    // Track how many edits touched each line since last save; undo will decrement
     const touchCountsRef = React.useRef<Map<number, number>>(new Map());
     const decoTimerRef = React.useRef<number | null>(null);
-
     function scheduleDecorations() {
-        if (decoTimerRef.current) window.clearTimeout(decoTimerRef.current);
+        if (decoTimerRef.current) globalThis.clearTimeout(decoTimerRef.current);
         decoTimerRef.current = window.setTimeout(() => {
             const decs = Array.from(touchCountsRef.current.keys()).map(ln => ({
                 range: { startLineNumber: ln, startColumn: 1, endLineNumber: ln, endColumn: 1 } as any,
@@ -1224,7 +1754,6 @@ function DetachedMonacoEditor({
             decoTimerRef.current = null;
         }, 100);
     }
-
     function clearChangeMarks(monaco: any) {
         touchCountsRef.current.clear();
         try {
@@ -1233,13 +1762,11 @@ function DetachedMonacoEditor({
         setIsDirty(false);
         savedVersionRef.current = modelRef.current?.getAlternativeVersionId?.() ?? 0;
     }
-
     async function handleSave(monaco: any) {
         const val = editorRef.current?.getValue?.() ?? "";
         await onSave(val);
         clearChangeMarks(monaco);
     }
-
     React.useEffect(() => {
         let disposed = false;
         (async () => {
@@ -1248,19 +1775,14 @@ function DetachedMonacoEditor({
                 openAlertModal("Monaco not available", "Could not load the Monaco editor.");
                 return;
             }
-
             await ensureMonacoWorkers(monaco);
-            await ensureMonacoStyles((monaco as any).version);
-
+            await ensureMonacoStyles(monaco.version);
             const monacoLang = inferLanguageFromName(name) || language || "plaintext";
             await ensureMonacoLanguage(monaco, monacoLang);
-
             if (!hostRef.current || disposed) return;
-
             const dark = document.documentElement.classList.contains("theme-dark")
                 || document.body.classList.contains("theme-dark");
             monaco.editor.setTheme(dark ? "vs-dark" : "vs");
-
             modelRef.current = monaco.editor.createModel(value, monacoLang);
             editorRef.current = monaco.editor.create(hostRef.current, {
                 model: modelRef.current,
@@ -1274,29 +1796,19 @@ function DetachedMonacoEditor({
                 glyphMargin: false,
                 lineDecorationsWidth: 0
             });
-
-            // Save the "clean" version id
             savedVersionRef.current = modelRef.current.getAlternativeVersionId();
-
-            // Mark Monaco as ready
             setMonacoReady(true);
-
-            // Ctrl/Cmd+S to save
             editorRef.current.addCommand(
-                (monaco as any).KeyMod?.CtrlCmd | (monaco as any).KeyCode?.KeyS,
+                monaco.KeyMod?.CtrlCmd | monaco.KeyCode?.KeyS,
                 () => handleSave(monaco)
             );
-
-            // Change listener
             const sub = editorRef.current.onDidChangeModelContent((e: any) => {
                 const currentVid = modelRef.current.getAlternativeVersionId();
                 setIsDirty(currentVid !== savedVersionRef.current);
-
                 if (currentVid === savedVersionRef.current) {
                     clearChangeMarks((window as any).monaco || {});
                     return;
                 }
-
                 if (e?.changes?.length) {
                     for (const ch of e.changes) {
                         const start = ch.range.startLineNumber;
@@ -1312,64 +1824,50 @@ function DetachedMonacoEditor({
                     scheduleDecorations();
                 }
             });
-
-            // Cleanup
-            (editorRef.current as any).__cleanup = () => sub.dispose();
+            editorRef.current.__cleanup = () => sub.dispose();
         })();
-
         return () => {
             disposed = true;
             setMonacoReady(false);
-            try { (editorRef.current as any)?.__cleanup?.(); } catch { }
+            try { (editorRef.current)?.__cleanup?.(); } catch { }
             try { editorRef.current?.dispose?.(); } catch { }
             try { modelRef.current?.dispose?.(); } catch { }
         };
     }, []);
-
-    // Handle close button with loading state awareness
     const handleCloseClick = React.useCallback(() => {
-        // If Monaco isn't ready yet, just close immediately
         if (!monacoReady) {
             onClose();
             return;
         }
-
-        // If nothing changed, close immediately
         const dirtyNow = (() => {
             try {
                 return modelRef.current?.getAlternativeVersionId?.() !== savedVersionRef.current;
             } catch { return false; }
         })();
-
         if (!dirtyNow) {
             onClose();
             return;
         }
-
-        // Otherwise, show inline confirm (no extra modal)
         setConfirmOpen(true);
     }, [monacoReady, onClose]);
-
-
     return (
         <div className={cl("detached-editor-modal")}>
             <div className={cl("detached-editor-toolbar")}>
-                <Text variant="heading-sm/semibold" className={cl("detached-editor-title")} title={name}>
+                <BaseText tag="h3" size="sm" weight="semibold" className={cl("detached-editor-title")} title={name}>
                     {name}
-                </Text>
-
+                </BaseText>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     {isDirty && <span className={cl("dirty-dot")} title="Unsaved changes" />}
                     <Button
-                        size={Button.Sizes.SMALL}
-                        look={Button.Looks.FILLED}
-                        onClick={() => handleSave((window as any).monaco || {})}
+                        size="small"
+                        onClick={() => handleSave((globalThis as any).monaco || {})}
                         disabled={!monacoReady}
                     >
                         Save
                     </Button>
                     <Button
-                        size={Button.Sizes.SMALL}
+                        size="small"
+                        variant="secondary"
                         onClick={handleCloseClick}
                     >
                         Close
@@ -1385,39 +1883,35 @@ function DetachedMonacoEditor({
                     borderBottom: "1px solid var(--background-modifier-hover)",
                     background: "var(--background-tertiary)"
                 }}>
-                    <Text variant="text-sm/normal" style={{ marginRight: "auto" }}>
+                    <Paragraph size="sm" style={{ marginRight: "auto" }}>
                         You have unsaved changes.
-                    </Text>
-                    <Button size={Button.Sizes.SMALL} onClick={() => setConfirmOpen(false)}>
+                    </Paragraph>
+                    <Button size="small" variant="secondary" onClick={() => setConfirmOpen(false)}>
                         Cancel
                     </Button>
                     <Button
-                        size={Button.Sizes.SMALL}
-                        look={Button.Looks.FILLED}
+                        size="small"
+                        variant="dangerPrimary"
                         onClick={() => {
-                            // Discard changes and close immediately
                             onClose();
                         }}
                     >
                         Discard
                     </Button>
                     <Button
-                        size={Button.Sizes.SMALL}
-                        look={Button.Looks.FILLED}
+                        size="small"
                         onClick={() => {
-                            // Save & close: snapshot text, close now, save in background
                             const snapshot = (() => {
                                 try { return editorRef.current?.getValue?.() ?? ""; } catch { return ""; }
                             })();
-                            onClose(); // closes instantly, no flash
-                            void onSave(snapshot); // background save
+                            onClose();
+                            onSave(snapshot);
                         }}
                     >
                         Save
                     </Button>
                 </div>
             )}
-
             <div className={cl("detached-editor-body")} ref={hostRef}>
                 {!monacoReady && (
                     <div style={{
@@ -1434,9 +1928,11 @@ function DetachedMonacoEditor({
         </div>
     );
 }
-
 /** ---------- Properties ---------- */
-function FileProperties({ file }: { file: FileNode; }) {
+type FilePropertiesProps = Readonly<{
+    file: FileNode;
+}>;
+function FileProperties({ file }: FilePropertiesProps) {
     const [stats, setStats] = useState<{ size?: number; mtime?: number; } | null>(null);
     useEffect(() => {
         (async () => {
@@ -1448,11 +1944,8 @@ function FileProperties({ file }: { file: FileNode; }) {
             }
         })();
     }, [file.path]);
-
-    if (!stats) return <Text variant="text-sm/normal" color="text-muted">Unable to load properties</Text>;
-
+    if (!stats) return <Paragraph size="sm">Unable to load properties</Paragraph>;
     const ext = getExt(file.name);
-
     return (
         <div>
             <div className={cl("property-row")}>
@@ -1478,13 +1971,11 @@ function FileProperties({ file }: { file: FileNode; }) {
         </div>
     );
 }
-
 /** ---------- Modals ---------- */
 function openImageModal(url: string, name: string) {
     openModal(props => (
         <ModalRoot {...props} size={ModalSize.DYNAMIC}>
             <div
-                onClick={props.onClose}
                 style={{
                     position: "fixed",
                     inset: 0,
@@ -1496,11 +1987,33 @@ function openImageModal(url: string, name: string) {
                     zIndex: 1000
                 }}
             >
+                {/* Fullscreen invisible button behind the image */}
+                <button
+                    type="button"
+                    onClick={props.onClose}
+                    aria-label={`Close image ${name}`}
+                    style={{
+                        position: "absolute",
+                        inset: 0,
+                        background: "transparent",
+                        border: "none",
+                        padding: 0,
+                        margin: 0,
+                        cursor: "inherit"
+                    }}
+                />
+                {/* Image itself – no event handlers */}
                 <img
                     src={url}
                     alt={name}
-                    style={{ maxWidth: "90vw", maxHeight: "90vh", objectFit: "contain", borderRadius: "8px" }}
-                    onClick={e => e.stopPropagation()}
+                    style={{
+                        maxWidth: "90vw",
+                        maxHeight: "90vh",
+                        objectFit: "contain",
+                        borderRadius: "8px",
+                        position: "relative",
+                        zIndex: 1
+                    }}
                 />
             </div>
         </ModalRoot>
@@ -1511,29 +2024,29 @@ function openConfirmModal({
     title,
     body,
     confirmText,
-    confirmColor,
+    confirmVariant = "primary",
     onConfirm
 }: {
     title: string;
     body: string;
     confirmText: string;
-    confirmColor: any;
+    confirmVariant?: ButtonVariant;
     onConfirm: () => void | Promise<void>;
 }) {
     openModal(props => (
         <ModalRoot {...props} size={ModalSize.SMALL}>
             <div style={{ padding: 16 }}>
-                <Text variant="heading-md/semibold" style={{ marginBottom: 8 }}>
+                <BaseText tag="h3" size="md" weight="semibold" style={{ marginBottom: 8 }}>
                     {title}
-                </Text>
-                <Text variant="text-sm/normal" color="text-normal" style={{ marginBottom: 16 }}>
+                </BaseText>
+                <Paragraph size="sm" style={{ marginBottom: 16 }}>
                     {body}
-                </Text>
+                </Paragraph>
                 <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-                    <Button look={Button.Looks.LINK} onClick={props.onClose}>
+                    <TextButton variant="secondary" onClick={props.onClose}>
                         Cancel
-                    </Button>
-                    <Button color={confirmColor} onClick={async () => { await onConfirm(); props.onClose(); }}>
+                    </TextButton>
+                    <Button variant={confirmVariant} onClick={async () => { await onConfirm(); props.onClose(); }}>
                         {confirmText}
                     </Button>
                 </div>
@@ -1541,92 +2054,74 @@ function openConfirmModal({
         </ModalRoot>
     ));
 }
-
 function openAlertModal(title: string, body: string) {
     openModal(props => (
         <ModalRoot {...props} size={ModalSize.SMALL}>
             <div style={{ padding: 16 }}>
-                <Text variant="heading-md/semibold" style={{ marginBottom: 8 }}>{title}</Text>
-                <Text variant="text-sm/normal" color="text-normal" style={{ marginBottom: 16, whiteSpace: "pre-wrap" }}>{body}</Text>
+                <BaseText tag="h3" size="md" weight="semibold" style={{ marginBottom: 8 }}>{title}</BaseText>
+                <Paragraph size="sm" style={{ marginBottom: 16, whiteSpace: "pre-wrap" }}>{body}</Paragraph>
                 <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-                    <Button color={Button.Colors.BRAND} onClick={props.onClose}>OK</Button>
+                    <Button variant="primary" onClick={props.onClose}>OK</Button>
                 </div>
             </div>
         </ModalRoot>
     ));
 }
-
 /** ---------- Monaco / Highlight helpers ---------- */
-let __monacoCache: any | null = null;
-async function ensureMonaco(): Promise<any | null> {
+let __monacoCache: any = null;
+async function ensureMonaco(): Promise<any> {
     if (__monacoCache) return __monacoCache;
     try {
-        // Prefer dynamic import (bundled in Vencord)
         // @ts-ignore
         let mod = await import("monaco-editor/esm/vs/editor/editor.api");
-        // Some bundlers put the actual API on .default
+        await import("monaco-editor/esm/vs/editor/contrib/find/browser/findController");
         // @ts-ignore
         if (mod?.editor == null && mod?.default) mod = mod.default;
         __monacoCache = mod;
     } catch {
-        // Fallback to a global, if present
         // @ts-ignore
-        __monacoCache = (window as any).monaco ?? null;
+        __monacoCache = (globalThis as any).monaco ?? null;
     }
     return __monacoCache;
 }
-
 // --- Configure Monaco to use module workers (no AMD, no toUrl) ---
 let __monacoWorkersConfigured = false;
+function makeMonacoWorker(pathFromPkgRoot: string, version?: string) {
+    try {
+        // @ts-ignore
+        return new Worker(new URL(`monaco-editor/esm/${pathFromPkgRoot}`, import.meta.url), { type: "module" });
+    } catch {
+        const v = (version && String(version).trim()) || "latest";
+        const url = `https://cdn.jsdelivr.net/npm/monaco-editor@${v}/esm/${pathFromPkgRoot}`;
+        return new Worker(url, { type: "module" });
+    }
+}
 async function ensureMonacoWorkers(monaco: any) {
     if (__monacoWorkersConfigured) return;
     __monacoWorkersConfigured = true;
-
-    // Create Workers either from the bundle (preferred) or from CDN as a fallback.
-    function makeWorker(pathFromPkgRoot: string, version?: string) {
-        try {
-            // Bundled path (lets esbuild include worker as a separate file)
-            // @ts-ignore
-            return new Worker(new URL(`monaco-editor/esm/${pathFromPkgRoot}`, import.meta.url), { type: "module" });
-        } catch {
-            // Fallback: load from CDN (keeps us independent from build config)
-            const v = (version && String(version).trim()) || "latest";
-            const url = `https://cdn.jsdelivr.net/npm/monaco-editor@${v}/esm/${pathFromPkgRoot}`;
-            return new Worker(url, { type: "module" });
-        }
-    }
-
-    // Tell Monaco how to create workers for different labels
     (globalThis as any).MonacoEnvironment = {
         getWorker(_: unknown, label: string) {
-            const v = (monaco as any)?.version;
-
-            // language workers
+            const v = monaco?.version;
             if (label === "json") {
-                return makeWorker("vs/language/json/json.worker.js", v);
+                return makeMonacoWorker("vs/language/json/json.worker.js", v);
             }
             if (label === "css" || label === "scss" || label === "less") {
-                return makeWorker("vs/language/css/css.worker.js", v);
+                return makeMonacoWorker("vs/language/css/css.worker.js", v);
             }
             if (label === "html" || label === "handlebars" || label === "razor") {
-                return makeWorker("vs/language/html/html.worker.js", v);
+                return makeMonacoWorker("vs/language/html/html.worker.js", v);
             }
             if (label === "typescript" || label === "javascript") {
-                return makeWorker("vs/language/typescript/ts.worker.js", v);
+                return makeMonacoWorker("vs/language/typescript/ts.worker.js", v);
             }
-
-            // generic editor worker
-            return makeWorker("vs/editor/editor.worker.js", v);
+            return makeMonacoWorker("vs/editor/editor.worker.js", v);
         }
     };
 }
-
-
 // --- Monaco language helpers ---
-// Map common file extensions to Monaco language IDs (covers gaps / unknown ext)
 function inferLanguageFromName(name: string): string | undefined {
-    const m = name.toLowerCase().match(/\.([a-z0-9]+)$/);
-    const ext = m?.[1];
+    const match = EXT_EXTRACTOR.exec(name.toLowerCase());
+    const ext = match?.[1];
     if (!ext) return undefined;
     const map: Record<string, string> = {
         js: "javascript",
@@ -1671,8 +2166,6 @@ function inferLanguageFromName(name: string): string | undefined {
     };
     return map[ext];
 }
-
-// Dynamic language-module loader for Monaco ESM
 const LanguageLoaders: Record<string, () => Promise<unknown>> = {
     javascript: () => import("monaco-editor/esm/vs/basic-languages/javascript/javascript.contribution"),
     typescript: () => import("monaco-editor/esm/vs/basic-languages/typescript/typescript.contribution"),
@@ -1700,8 +2193,6 @@ const LanguageLoaders: Record<string, () => Promise<unknown>> = {
     lua: () => import("monaco-editor/esm/vs/basic-languages/lua/lua.contribution"),
     swift: () => import("monaco-editor/esm/vs/basic-languages/swift/swift.contribution"),
 };
-
-// Ensure the contribution for a language is loaded (no-op if unknown)
 async function ensureMonacoLanguage(monaco: any, langId: string | undefined) {
     if (!langId) return;
     if (monaco.languages.getLanguages().some((l: any) => l.id === langId)) return;
@@ -1711,8 +2202,6 @@ async function ensureMonacoLanguage(monaco: any, langId: string | undefined) {
         catch { /* fallback to plaintext if a language isn’t present */ }
     }
 }
-
-
 function injectCssOnce(id: string, href: string) {
     if (document.getElementById(id)) return;
     const link = document.createElement("link");
@@ -1721,35 +2210,33 @@ function injectCssOnce(id: string, href: string) {
     link.href = href;
     document.head.appendChild(link);
 }
-
 async function ensureMonacoStyles(monacoVersion?: string) {
     const v = monacoVersion && String(monacoVersion).trim() ? monacoVersion : "latest";
-    // Core editor styles
     injectCssOnce(
         "monaco-editor-css",
         `https://cdn.jsdelivr.net/npm/monaco-editor@${v}/min/vs/editor/editor.main.css`
     );
 }
-
 function getFileIcon(filename: string): string {
     const e = getExt(filename);
     const info = extInfo(e);
     return info.icon || "📄";
 }
-
 function safeHighlight(language: string, code: string): string {
+    const MAX_HIGHLIGHT_SIZE = 100000;
+    if (code.length > MAX_HIGHLIGHT_SIZE) {
+        return code.replaceAll(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" } as any)[c]);
+    }
     try {
         if (language && hljs.getLanguage(language)) {
             return hljs.highlight(code, { language }).value;
         }
-        // As a fallback, try auto
         return hljs.highlightAuto(code).value;
     } catch (e) {
         compat_logger.warn("Syntax highlighting failed:", e);
-        return code.replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" } as any)[c]);
+        return code.replaceAll(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" } as any)[c]);
     }
 }
-
 function formatMaybeJSON(ext: string, content: string): string {
     if (ext === "json") {
         try {
@@ -1760,7 +2247,6 @@ function formatMaybeJSON(ext: string, content: string): string {
     }
     return content;
 }
-
 /** ---------- Settings Tab injection ---------- */
 export function injectSettingsTabs() {
     const settingsPlugin = (Vencord.Plugins.plugins.Settings as unknown) as SettingsPlugin;
@@ -1771,7 +2257,6 @@ export function injectSettingsTabs() {
         className: "vc-vfs-tab"
     }));
 }
-
 export function unInjectSettingsTab() {
     const settingsPlugin = (Vencord.Plugins.plugins.Settings as unknown) as SettingsPlugin;
     const idx = settingsPlugin.customSections.findIndex(s => s({}).className === "vc-vfs-tab");

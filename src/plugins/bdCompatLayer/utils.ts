@@ -1,32 +1,24 @@
 /* eslint-disable simple-header/header */
 /*
  * Vencord, a modification for Discord's desktop app
- * Copyright (c) 2022 Vendicated and contributors
  *
- * BD Compatibility Layer plugin
- * Copyright (c) 2023-2025 Davvy and WhoIsThis
+ * BD Compatibility Layer plugin for Vencord
+ * Copyright (c) 2023-present Davvy and WhoIsThis
+ * Copyright (c) 2025 Pharaoh2k
+ *
+ * See /CHANGES/CHANGELOG.txt for a list of changes by Pharaoh2k.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
+ * the Free Software Foundation, version 3 of the License only.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+ * See the LICENSE file in the Vencord repository root for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>.
- *
- * Modifications to BD Compatibility Layer:
- * Copyright (c) 2025 Pharaoh2k
- * - Enhanced addLogger function to accept pluginName parameter and added static helper methods
- * - Added Discord keybind registry helpers (resolveKeybinds, registerOrUpdateKeybind, deleteKeybind)
- * - Implemented keybind registration for display/persistence in Discord settings
- * - Improved deleteKeybind and registerOrUpdateKeybind
-*/
-
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
 import { Link } from "@components/Link";
 import { Logger } from "@utils/Logger";
 import { PluginNative } from "@utils/types";
@@ -240,6 +232,46 @@ export async function reloadCompatLayer() {
     }
 }
 
+export async function reloadPluginsSelectively(changedFiles: string[]) {
+    const fs = window.require("fs");
+    const path = window.require("path");
+    const pluginFolder = getGlobalApi().Plugins.folder;
+
+    // Get currently loaded plugins
+    const loadedPlugins = getGlobalApi().Plugins.getAll();
+    const loadedPluginMap = new Map(
+        loadedPlugins.map(p => [p.filename + ".plugin.js", p])
+    );
+
+    // Only reload changed plugins
+    for (const filePathOrName of changedFiles) {
+        const filename = path.basename(filePathOrName);
+        const filePath = path.join(pluginFolder, filename);
+
+        // Remove old version if exists
+        const existingPlugin = loadedPluginMap.get(filename);
+        if (existingPlugin) {
+            try {
+                if (existingPlugin.stop) existingPlugin.stop();
+                const allPlugins = getGlobalApi().Plugins.getAll();
+                const index = allPlugins.indexOf(existingPlugin);
+                if (index > -1) allPlugins.splice(index, 1);
+            } catch (e) {
+                compat_logger.error("Failed to stop plugin", filename, e);
+            }
+        }
+
+        // Load new version
+        try {
+            const pluginJS = fs.readFileSync(filePath, "utf8");
+            const conv = await convertPlugin(pluginJS, filename, true, pluginFolder);
+            await addCustomPlugin(conv);
+        } catch (e) {
+            compat_logger.error("Failed to reload plugin", filename, e);
+        }
+    }
+}
+
 export function docCreateElement(tag: string, props: Record<string, any> = {}, childNodes: Node[] = [], attrs: Record<string, string> = {}) {
     const element = document.createElement(tag);
 
@@ -366,6 +398,22 @@ export const FSUtils = {
         const files = Array.isArray(fileOrFiles) ? (fileOrFiles as File[]) : [fileOrFiles as File];
         const fs = window.require("fs");
         const path = window.require("path");
+
+        // Use promises.writeFile or promisify
+        const writeFilePromise = (filePath: string, buffer: Uint8Array) => {
+            return new Promise((resolve, reject) => {
+                fs.writeFile(filePath, buffer, err => {
+                    if (err) {
+                        compat_logger.error("[Importer] Error during import", err);
+                        reject(err);
+                    } else {
+                        compat_logger.log("[Importer] Success");
+                        resolve(undefined);
+                    }
+                });
+            });
+        };
+
         for (const file of files) {
             let filePath = targetPath;
             compat_logger.log("[Importer] Importing file", filePath);
@@ -376,17 +424,7 @@ export const FSUtils = {
                 filePath += file.name;
             }
             compat_logger.log("[Importer] Resolved path:", filePath);
-            fs.writeFile(
-                filePath,
-                FSUtils.toBuffer(
-                    await file.arrayBuffer()
-                ),
-                err => {
-                    if (err)
-                        compat_logger.error("[Importer] Error during import", err);
-                    compat_logger.log("[Importer] Success");
-                }
-            );
+            await writeFilePromise(filePath, FSUtils.toBuffer(await file.arrayBuffer()));
         }
     },
     exportFile(targetPath: string) {
@@ -611,8 +649,8 @@ export function registerOrUpdateKeybind(id: string, shortcutTokensLower: string[
         // Check if keybind exists before trying to delete
         try {
             const exists = KeybindStore?.getState?.()?.[id] ||
-                          KeybindStore?.getKeybindForAction?.(id) ||
-                          KeybindStore?.getKeybind?.(id);
+                KeybindStore?.getKeybindForAction?.(id) ||
+                KeybindStore?.getKeybind?.(id);
             if (exists) {
                 KeybindsModule.deleteKeybind(id);
             }
@@ -648,8 +686,8 @@ export function deleteKeybind(id: string) {
     try {
         // Try to get the keybind first to verify it exists
         const exists = KeybindStore?.getState?.()?.[id] ||
-                      KeybindStore?.getKeybindForAction?.(id) ||
-                      KeybindStore?.getKeybind?.(id);
+            KeybindStore?.getKeybindForAction?.(id) ||
+            KeybindStore?.getKeybind?.(id);
 
         // Only attempt deletion if the keybind exists in Discord's store
         if (exists) {

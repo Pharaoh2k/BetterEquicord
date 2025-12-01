@@ -1,30 +1,24 @@
 /* eslint-disable simple-header/header */
 /*
  * Vencord, a modification for Discord's desktop app
- * Copyright (c) 2022 Vendicated and contributors
  *
- * BD Compatibility Layer plugin
- * Copyright (c) 2023-2025 Davvy and WhoIsThis
+ * BD Compatibility Layer plugin for Vencord
+ * Copyright (c) 2023-present Davvy and WhoIsThis
+ * Copyright (c) 2025 Pharaoh2k
+ *
+ * See /CHANGES/CHANGELOG.txt for a list of changes by Pharaoh2k.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
+ * the Free Software Foundation, version 3 of the License only.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+ * See the LICENSE file in the Vencord repository root for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>.
- *
- *  Modifications to BD Compatibility Layer:
- *  Copyright (c) 2025 Pharaoh2k
- *  - Commented code cleanup
- *  - Stamp __bdFileSig (on-disk mtime) on addCustomPlugin so enable() can detect on-disk updates and trigger a soft reload.
-*/
-
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
 import ErrorBoundary from "@components/ErrorBoundary";
 import { ModalContent, ModalFooter, ModalHeader, ModalRoot, ModalSize, openModal } from "@utils/modal";
 import { OptionType, Plugin } from "@utils/types";
@@ -36,7 +30,6 @@ import { PluginMeta } from "~plugins";
 import { PLUGIN_NAME } from "./constants.js";
 import { getGlobalApi } from "./fakeBdApi.js";
 import { arrayToObject, compat_logger, createTextForm } from "./utils.js";
-
 export type AssembledBetterDiscordPlugin = {
     started: boolean;
     authors: any[];
@@ -71,8 +64,10 @@ export type AssembledBetterDiscordPlugin = {
     sourcePath: string | undefined;
     filename: string;
     myProxy: {} | undefined;
+    added?: number;
+    modified?: number;
+    size?: number;
 };
-
 const pluginSettingsModalCreator = (props, name: string, child) => {
     return React.createElement(
         ErrorBoundary,
@@ -120,9 +115,7 @@ const pluginSettingsModalCreator = (props, name: string, child) => {
         )
     );
 };
-
 function openSettingsModalForPlugin(final: AssembledBetterDiscordPlugin) {
-
     const panel = final.instance.getSettingsPanel!();
     let child: typeof panel | React.ReactElement = panel;
     if (panel instanceof Node || typeof panel === "string")
@@ -135,18 +128,15 @@ function openSettingsModalForPlugin(final: AssembledBetterDiscordPlugin) {
                 this.element = panel as Node | string;
                 this.state = { hasError: false };
             }
-
             componentDidCatch() {
                 this.setState({ hasError: true });
             }
-
             componentDidMount() {
                 if (this.element instanceof Node)
                     this.elementRef.current?.appendChild(
                         this.element
                     );
             }
-
             render() {
                 if ((this.state as any).hasError) return null;
                 const props = {
@@ -166,7 +156,6 @@ function openSettingsModalForPlugin(final: AssembledBetterDiscordPlugin) {
         return pluginSettingsModalCreator(props, final.name, child as React.ReactElement);
     });
 }
-
 const createOption = (tempOptions: { [x: string]: { type: OptionType; component: () => DetailedReactHTMLElement<{}, HTMLElement>; }; }, key: string | number, label: any, value: any, isUrl = false) => {
     if (value && typeof value === "string") {
         Object.defineProperty(tempOptions, key, {
@@ -179,9 +168,18 @@ const createOption = (tempOptions: { [x: string]: { type: OptionType; component:
         });
     }
 };
-
 export async function convertPlugin(BetterDiscordPlugin: string, filename: string, detectDuplicateName: boolean = false, sourcePath = "") {
     const final = {} as AssembledBetterDiscordPlugin;
+    // Add file stats
+    let stats: any = null;
+    try {
+        const fs = window.require("fs");
+        const fullPath = sourcePath ? `${sourcePath}/${filename}` : filename;
+        stats = fs.existsSync(fullPath) ? fs.statSync(fullPath) : null;
+    }
+    catch {
+        // fs not available in this environment; skip file stats
+    }
     final.started = false;
     final.sourcePath = sourcePath;
     final.filename = filename;
@@ -192,7 +190,7 @@ export async function convertPlugin(BetterDiscordPlugin: string, filename: strin
     ];
     final.name = "";
     final.format = "jsdoc";
-    final.internals = {};
+    final.internals = {} as any;
     final.description = "";
     final.id = "";
     final.start = () => { };
@@ -209,11 +207,18 @@ export async function convertPlugin(BetterDiscordPlugin: string, filename: strin
                 ),
         },
     };
-
-    const parsedMeta = BetterDiscordPlugin.substring(0, 64).includes("//META") ? parseLegacyMeta(BetterDiscordPlugin, filename) : parseNewMeta(BetterDiscordPlugin, filename);
-    const { metaEndLine } = parsedMeta;
-
+    // Parse metadata
+    const parsedMeta = BetterDiscordPlugin.substring(0, 64).includes("//META")
+        ? parseLegacyMeta(BetterDiscordPlugin, filename)
+        : parseNewMeta(BetterDiscordPlugin, filename);
     Object.assign(final, parsedMeta.pluginMeta);
+    // Add file metadata if available
+    if (stats) {
+        final.added = stats.atimeMs;
+        final.modified = stats.mtimeMs;
+        final.size = stats.size;
+    }
+    const { metaEndLine } = parsedMeta;
     // we already have all needed meta at this point
     final.myProxy = new Proxy(final, {
         get(t, p) {
@@ -221,11 +226,13 @@ export async function convertPlugin(BetterDiscordPlugin: string, filename: strin
         }
     });
     (window.BdCompatLayer.queuedPlugins as any[]).push(final.myProxy);
-
-    final.internals = wrapBetterDiscordPluginCode(BetterDiscordPlugin, filename);
+    final.internals = wrapBetterDiscordPluginCode(BetterDiscordPlugin, filename, final.name || final.id);
     let { exports } = final.internals.module;
     if (typeof exports === "object") {
         exports = exports[final.name] ?? exports.default;
+    }
+    if (typeof exports === "undefined") {
+        exports = final.internals.module.workingTmp;
     }
     try {
         final.instance = exports.prototype ? new exports(final) : exports(final);
@@ -237,33 +244,35 @@ export async function convertPlugin(BetterDiscordPlugin: string, filename: strin
     // passing the plugin object directly as "meta".
     if (typeof final.instance.load === "function")
         final.instance.load();
-
-    if (final.instance.getName) final.name = final.instance.getName();
-    if (final.instance.getVersion)
+    // Use deprecated methods ONLY as fallbacks
+    if (!final.name && final.instance.getName) {
+        final.name = final.instance.getName();
+        compat_logger.warn(`[${filename}] Using deprecated getName() method. Use @name in JSDoc instead.`);
+    }
+    if (!final.version && final.instance.getVersion) {
         final.version = final.instance.getVersion() || "6.6.6";
-    console.log(final.instance);
-    if (final.instance.getDescription)
+        compat_logger.warn(`[${filename}] Using deprecated getVersion() method. Use @version in JSDoc instead.`);
+    }
+    if (!final.description && final.instance.getDescription) {
         final.description = final.instance.getDescription();
-    final.originalName = final.name;
+        compat_logger.warn(`[${filename}] Using deprecated getDescription() method. Use @description in JSDoc instead.`);
+    }
+    console.log(final.instance);
+    (final as any).originalName = final.name;
     if (detectDuplicateName) {
         // eslint-disable-next-line @typescript-eslint/dot-notation
         if (Vencord.Plugins.plugins[final.name] && !Vencord.Plugins.plugins[final.name]["instance"]) {
             final.name += "-BD";
         }
     }
-
-
     const neededMeta = ["name", "version", "description"];
     const whatsMissingDavil = neededMeta.filter(prop => !final || !final[prop]);
-
     if (whatsMissingDavil.length > 0) {
         const ThisShouldGiveUsWhatIsMissingInThePlugin = whatsMissingDavil.join(", ");
-
         const newTextElement = document.createElement("div");
         newTextElement.innerHTML = `The BD Plugin ${final.name || final.id} is missing the following metadata below<br><br>
         <strong>${ThisShouldGiveUsWhatIsMissingInThePlugin.toUpperCase()}</strong><br><br>
         The plugin could not be started, Please fix.`;
-
         getGlobalApi().showNotice(newTextElement, {
             timeout: 0,
             buttons: [
@@ -277,7 +286,6 @@ export async function convertPlugin(BetterDiscordPlugin: string, filename: strin
         });
         throw new Error("Incomplete plugin, " + newTextElement.innerHTML);
     }
-
     const tempOptions = {};
     // eslint-disable-next-line @typescript-eslint/dot-notation
     tempOptions["versionLabel"] = {
@@ -298,7 +306,6 @@ export async function convertPlugin(BetterDiscordPlugin: string, filename: strin
         }
     }
     Object.assign(tempOptions, {});
-
     const startFunction = function (this: AssembledBetterDiscordPlugin) {
         const compatLayerSettings = Vencord.Settings.plugins[PLUGIN_NAME];
         compatLayerSettings.pluginsStatus[this.name] = true;
@@ -331,9 +338,7 @@ function parseLegacyMeta(pluginCode: string, filename: string) {
     }
     return { pluginMeta: parsedLine, metaEndLine: 1 };
 }
-
 const as_yes_no = (b: boolean) => b ? "yes" : "no";
-
 const test_util = (source: string, what: string) => {
     const startsWith = source.startsWith(what);
     if (!startsWith)
@@ -352,106 +357,149 @@ const test_util = (source: string, what: string) => {
         `valid? ${validScore} / 3\n` +
         `analysis: \n${valid.split("\n").map(x => "\t" + x).join("\n")}`;
 };
-
+const stripBOM = (fileContent: string) => {
+    if (fileContent.charCodeAt(0) === 0xFEFF) {
+        fileContent = fileContent.slice(1);
+    }
+    return fileContent;
+};
+const splitRegex = /[^\S\r\n]*?\r?(?:\r\n|\n)[^\S\r\n]*?\*[^\S\r\n]?/;
+const escapedAtRegex = /^\\@/;
 function parseNewMeta(pluginCode: string, filename: string) {
-    let lastSuccessfulMetaLine = 0;
-    let metaEndLine = 0;
-    const resultMeta = { name: "", id: "", description: "", authors: [] as { id: number, name: string; }[], version: "" };
-    let authorIds = [] as number[];
-    let authorNames = [] as string[];
-
+    const firstLine = pluginCode.split("\n")[0];
+    if (!firstLine.includes("/**")) {
+        throw new Error("No JSDoc metadata found");
+    }
+    const block = pluginCode.split("/**", 2)[1].split("*/", 1)[0];
+    const out: Record<string, string | string[]> = {};
+    let field = "";
+    let accum = "";
+    let lineNumber = 0;
     try {
-        const metadata = pluginCode
-            .split("/**")[1]
-            .split("*/")[0]
-            .replace(/\r/g, "")
-            .replaceAll("\n", "")
-            .split("*")
-            .filter(x => x !== "" && x !== " ");
-        metaEndLine = metadata.length + 3;
-        for (let i = 0; i < metadata.length; i++) {
-            const element = metadata[i].trim();
-            compat_logger.debug(`[Meta Parser] Executing for filename: ${filename}. Element: ${element}\n` +
-                test_util(element, "@name") + "\n" +
-                test_util(element, "@description") + "\n" +
-                test_util(element, "@authorLink") + "\n" +
-                test_util(element, "@authorId") + "\n" +
-                test_util(element, "@author") + "\n" +
-                test_util(element, "@version") + "\n"
-            );
-            if (element.startsWith("@name")) {
-                resultMeta.name = element.split("@name")[1].trim();
-                resultMeta.id = resultMeta.name || window.require("path").basename(filename); // what?
-            } else if (element.startsWith("@description")) {
-                resultMeta.description = element.split("@description ")[1];
-            } else if (element.startsWith("@authorLink")) {
-                // TODO: support this
-            } else if (element.startsWith("@authorId")) {
-                authorIds = element.split("@authorId ")[1].split(",").map(x => BigInt(x.trim())) as unknown[] as number[];
-            } else if (element.startsWith("@author")) {
-                authorNames = element.split("@author ")[1].split(",").map(x => x.trim());
-            } else if (element !== "" && element.length > 2)
-                resultMeta[element.split("@")[1].split(" ")[0]] = element.substring(element.split("@")[1].split(" ")[0].length + 2);
-            lastSuccessfulMetaLine = i + 1; // because we skipped the first line
+        for (const line of block.split(splitRegex)) {
+            lineNumber++;
+            if (line.length === 0) continue;
+            const bdCompatSettings = Vencord.Settings?.plugins?.["BD Compatibility Layer"];
+            if (bdCompatSettings?.bdCompatDebug && line.charAt(0) === "@") {
+                compat_logger.debug(
+                    `[Meta Parser] ${filename} line ${lineNumber}: "${line.substring(0, 50)}..."\n` +
+                    test_util(line, "@name") + "\n" +
+                    test_util(line, "@description") + "\n" +
+                    test_util(line, "@author") + "\n" +
+                    test_util(line, "@authorId") + "\n" +
+                    test_util(line, "@version")
+                );
+            }
+            if (line.charAt(0) === "@" && line.charAt(1) !== " ") {
+                if (!out[field]) {
+                    out[field] = accum.trim();
+                } else {
+                    if (!Array.isArray(out[field])) out[field] = [out[field] as string];
+                    (out[field] as string[]).push(accum.trim());
+                }
+                const l = line.indexOf(" ");
+                field = line.substring(1, l);
+                accum = line.substring(l + 1);
+            } else {
+                accum += " " + line.replace("\\n", "\n").replace(escapedAtRegex, "@");
+            }
         }
     } catch (error) {
-        const lines = pluginCode.split("\n");
-        const previewStart = Math.max(0, lastSuccessfulMetaLine - 2);
-        const previewEnd = Math.min(lines.length, lastSuccessfulMetaLine + 3);
+        // Enhanced error reporting with test_util
+        const lines = block.split(splitRegex);
+        const errorLineIndex = lineNumber - 1;
+        const previewStart = Math.max(0, errorLineIndex - 2);
+        const previewEnd = Math.min(lines.length, errorLineIndex + 3);
         const preview = lines.slice(previewStart, previewEnd)
             .map((curLine, index) => {
                 const actualLine = previewStart + index + 1;
-                if (actualLine === lastSuccessfulMetaLine + 2) { // +2 because we want the next line, the one after the last successful one
-                    return `>>> HERE >>> ${actualLine}: ${curLine}`;
-                }
-                return `     ${actualLine}: ${curLine}`;
+                const marker = actualLine === lineNumber ? ">>> ERROR >>> " : "             ";
+                return `${marker}${actualLine}: ${curLine}`;
             }).join("\n");
-
+        const errorLine = lines[errorLineIndex] || "";
+        const analysis = errorLine.startsWith("@")
+            ? `\nField analysis:\n${test_util(errorLine, "@name")}\n${test_util(errorLine, "@author")}\n${test_util(errorLine, "@version")}`
+            : "";
         compat_logger.error(
-            `Something snapped during parsing of meta for file: ${filename}\n` +
-            `The error got triggered after ${lastSuccessfulMetaLine + 1}-nth line of meta\n` +
-            `Plugin code around the error:\n${preview}\n` +
-            "The error was:", error
+            `Failed to parse JSDoc metadata for: ${filename}\n` +
+            `Error at line ${lineNumber} in metadata block:\n${preview}${analysis}\n` +
+            "Error:", error
         );
         throw error;
     }
-    if (authorNames.length > 0) {
-        for (let index = 0; index < authorNames.length; index++) {
-            const name = authorNames[index];
+    // Save the last accumulated field
+    if (!out[field]) {
+        out[field] = accum.trim();
+    } else {
+        if (!Array.isArray(out[field])) out[field] = [out[field] as string];
+        (out[field] as string[]).push(accum.trim());
+    }
+    delete out[""];
+    out.format = "jsdoc";
+    // Handle author array
+    const resultMeta = {
+        name: out.name as string || "",
+        id: out.name as string || window.require("path").basename(filename),
+        description: out.description as string || "No description",
+        authors: [] as { id: number; name: string; }[],
+        version: out.version as string || "???",
+        format: "jsdoc" as const
+    };
+    // Parse authors
+    const authorField = out.author;
+    const authorIdField = out.authorId;
+    if (authorField) {
+        const authorNames = Array.isArray(authorField) ? authorField : [authorField];
+        const authorIds = authorIdField
+            ? (Array.isArray(authorIdField) ? authorIdField : [authorIdField]).map(id => BigInt(id.trim()))
+            : [];
+        authorNames.forEach((name, i) => {
             resultMeta.authors.push({
-                name,
-                id: authorIds[index] ?? 0n,
+                name: name.trim(),
+                id: (authorIds[i] ?? 0n) as unknown as number
             });
+        });
+    }
+    // Copy other metadata
+    for (const key in out) {
+        if (!["name", "description", "author", "authorId", "version", "format"].includes(key)) {
+            resultMeta[key] = out[key];
         }
     }
+    const metaEndLine = block.split(splitRegex).length + 3;
     return { pluginMeta: resultMeta, metaEndLine };
 }
-
-const WRAPPER_AUTO_DEBUG_ENABLED = true;
-
-function wrapBetterDiscordPluginCode(pluginCode: string, filename: string) {
-    let codeData = pluginCode;
-    const debugLine = "\ntry{" + codeData + "}catch(e){console.error(e);debugger;}";
-    const additionalCode = [
-        "const module = { exports: {} };",
+const normalizeExports = (name: string) => `
+if (module.exports.default) {
+    module.exports = module.exports.default;
+}
+if (typeof(module.exports) !== "function") {
+    module.exports = eval(${JSON.stringify(name)});
+}`;
+function wrapBetterDiscordPluginCode(pluginCode: string, filename: string, pluginName: string) {
+    pluginCode = stripBOM(pluginCode);
+    const module = { filename, exports: {} };
+    const scopeVars = [
         "const exports = module.exports;",
         "const global = window;",
-        "const __filename=BdApi.Plugins.folder+`/" + filename + "`;",
-        "const __dirname=BdApi.Plugins.folder;",
-        "const DiscordNative={get clipboard() { return window.BdCompatLayer.fakeClipboard; }};",
-    ];
-    codeData =
-        "(()=>{" +
-        additionalCode.join("") +
-        (WRAPPER_AUTO_DEBUG_ENABLED ? debugLine : codeData) +
-        "\nreturn module;})();\n";
-    codeData += "\n//# sourceURL=" + "betterDiscord://plugins/" + filename;
-    const codeClass = eval.call(window, codeData);
-    return {
-        module: codeClass,
-    };
+        "const process = window.process;",
+        "console.log('Plugin wrapper DiscordNative check:', window.DiscordNative, window.DiscordNative?.nativeModules);",
+        "const DiscordNative=(window.DiscordNative||(window.DiscordNative={}));Object.defineProperty(DiscordNative,'clipboard',{configurable:true,get:()=>window.BdCompatLayer.fakeClipboard});",
+    ].join("\n");
+    pluginCode = scopeVars + "\n" + pluginCode;
+    pluginCode += normalizeExports(pluginName);
+    pluginCode += `\n//# sourceURL=betterdiscord://plugins/${filename}`;
+    const wrappedPlugin = new Function(
+        "require",
+        "module",
+        "__filename",
+        "__dirname",
+        pluginCode
+    );
+    const fullPath = `${getGlobalApi().Plugins.folder}/${filename}`;
+    wrappedPlugin(window.require, module, fullPath, getGlobalApi().Plugins.folder);
+    return { module };
 }
-
 export async function addCustomPlugin(generatedPlugin: AssembledBetterDiscordPlugin) {
     const { GeneratedPlugins } = window;
     const generated = generatedPlugin;
@@ -460,11 +508,9 @@ export async function addCustomPlugin(generatedPlugin: AssembledBetterDiscordPlu
     // Stamp a file signature so enable() can detect future on-disk updates
     try {
         (Vencord.Plugins.plugins[generated.name] as any).__bdFileSig =
-        (window as any).require?.("fs")?.statSync(`${getGlobalApi().Plugins.folder}/${generated.filename}`)?.mtimeMs | 0;
+            (window as any).require?.("fs")?.statSync(`${getGlobalApi().Plugins.folder}/${generated.filename}`)?.mtimeMs | 0;
     } catch { }
-
     Vencord.Settings.plugins[generated.name].enabled = false;
-
     const compatLayerSettings = Vencord.PlainSettings.plugins[PLUGIN_NAME];
     if (generatedPlugin.name in compatLayerSettings.pluginsStatus) {
         const thePluginStatus = compatLayerSettings.pluginsStatus[generatedPlugin.name];
@@ -474,7 +520,6 @@ export async function addCustomPlugin(generatedPlugin: AssembledBetterDiscordPlu
     }
     GeneratedPlugins.push(Vencord.Plugins.plugins[generated.name]);
 }
-
 export async function removeAllCustomPlugins() {
     const { GeneratedPlugins } = window as Window & typeof globalThis & { GeneratedPlugins: AssembledBetterDiscordPlugin[]; };
     const copyOfGeneratedPlugin = arrayToObject(GeneratedPlugins);

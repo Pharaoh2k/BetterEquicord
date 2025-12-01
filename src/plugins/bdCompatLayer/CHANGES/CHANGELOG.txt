@@ -1,0 +1,107 @@
+*** fakeBdApi.ts
+- Added KeybindSettingComponent and RadioSettingComponent imports
+- Added error handling for corrupted config files in DataHolder.latestDataCheck()
+- Modified showConfirmationModal to use CSS variables for text color and support danger mode
+- Fixed color picker setting to properly update current.value when color changes
+- Added keybind setting type support in buildSettingsPanel
+- Added radio setting type support in buildSettingsPanel
+- Fixed Logger getter to return function reference instead of calling it
+- Commented code cleanup
+- Fixed waitForModule to respect defaultExport option and wrap bare function exports like BD
+- 2025-10-18 (Pharaoh2k)
+ - Webpack.waitForModule: change abort handling to resolve quietly on AbortSignal and ignore late arrivals; prevents â€œUncaught (in promise) Error: Aborted during plugin stop/update flows.
+- BdApi.Plugins: added enable/disable/toggle. Implement reload with soft hot-swap and fallbacks (reload all BD plugins -> page reload).
+- Cleanup: ensure Patcher.unpatchAll(name) and DOM.removeStyle(name) on disable/reload.
+- UI.showChangelogModal: wire up real modal (import from `./ui/changelog`) instead of stub.
+- add auto-pop on version bump (queue+debounce) with support for config-array + remote markdown.
+- include tiny parser for `### x.y.z` headings and `- item` bullets; bucket into Added/Improved/Fixes/Other.
+- UI.createTooltip: implement lightweight tooltip with CSS injection, viewport clamping, and smart side flipping.
+- UI.showToast: accept BD-style options object or type strings (info/success/warn/error), map to codes, and guard if module missing.
+- Plugins: when enable/reload detects version change, queue compat changelog display (falls back silently if unavailable).
+- 2025-10-31: feat(components): add BdApi.Components.ErrorBoundary (BD parity). Supports id/name/hideError/fallback/onError, logs with clickable fallback to open DevTools, and guards render override; fixes ChannelsPreview React #130 crash when component was missing.
+- 2025-11-28: feat(hooks): add BdApi.Hooks (BD parity). Provides useStateFromStores (via Discord's internal hook), useForceUpdate, and useData (reactive plugin data hook). DataHolder.save now notifies listeners for reactivity.
+
+
+*** fakeStuff.ts
+- Improved FakeEventEmitter: Set-based listeners for O(1) removal, per-listener error isolation, and multi-argument emit support
+- Replaced runtime TypeScript fetching/parsing with pre-bundled JavaScript modules
+
+
+*** fileSystemViewer.tsx
+- Complete rewrite of file system viewer with modern UI
+- Added Monaco editor integration for in-browser code editing with syntax highlighting
+- Added detached editor modal with change tracking and autosave functionality
+- Implemented unified cross-backend filesystem helpers (Node fs, FSUtils, IndexedDB, localStorage)
+- Added file search with debounced filtering and breadth-first warm-loading
+- Added storage backend detection and quota display widget
+- Implemented rich file preview system (images, video, audio, PDF, markdown, code)
+- Added file type registry with extension-to-language mapping
+- Implemented atomic file writes with fsync for data durability
+- Added properties panel with file metadata display
+- Implemented tree state management via reducer pattern
+- Added highlight-on-search functionality
+- Added detached Monaco editor with unsaved changes confirmation
+
+
+*** indext.ts
+- Added crypto polyfill implementation using @noble/hashes for BD plugin compatibility
+- Added fixGhRaw() helper function for GitHub raw URL handling
+- Changed ZenFS loading to use jsdelivr CDN instead of GitHub raw URLs
+- Added FluxDispatcher-based navigation event handling for onSwitch compatibility
+- Replaced FSUtils.mkdirSyncRecursive with native fs.mkdirSync recursive option
+- Commented code cleanup
+
+
+*** pluginConstructor.ts
+- Commented code cleanup
+- Stamp __bdFileSig (on-disk mtime) on addCustomPlugin so enable() can detect on-disk updates and trigger a soft reload.
+
+
+*** treeView.tsx
+- Simplified TreeView component implementation
+- Removed TransparentButton dependency in favor of native div elements
+- Added proper ARIA attributes for accessibility (role, aria-selected, aria-expanded, aria-level)
+- Removed nodeStateStore in favor of local component state
+- Cleaned up event handling and context menu integration
+- Improved tree node styling with CSS variables
+
+
+*** utils.ts
+- Enhanced addLogger function to accept pluginName parameter and added static helper methods
+- Added Discord keybind registry helpers (resolveKeybinds, registerOrUpdateKeybind, deleteKeybind)
+- Implemented keybind registration for display/persistence in Discord settings
+- Improved deleteKeybind and registerOrUpdateKeybind	
+
+
+*** /components/ColorPickerSetting.tsx
+- Added useMemo hook for optimized initial color conversion
+- Added internal state management for color as integer
+- Changed showEyeDropper from false to true
+- Improved color handling to store internally as integer matching Discord's ColorPicker format
+
+
+*** /components/RadioSetting.tsx
+- Added RadioSetting.tsx (Radio Buttons Setting implementation)
+
+
+*** /components/KeybindSetting.tsx
+- Added KeybindSetting.tsx (Keybind Setting implementation)
+
+
+*** /components/SliderSetting.tsx
+- Added BD-style Slider component with floating value indicator on hover/drag
+- Native <input type="range"> with CSS-only tooltip (no React portal issues)
+- Support for markers with clickable labels to jump to preset values
+- Matches BetterDiscord slider appearance and behavior
+
+
+*** /components/ColorPickerSetting.tsx
+- Replaced Discord ColorPicker with BD-style implementation
+- Added default color swatch with click-to-reset functionality
+- Added custom color picker with pipette icon overlay
+- Added 20 preset color swatches matching BD's default palette
+- Checkmark indicator shows on currently selected color (default, custom, or preset)
+
+
+*** /ui/changelog.tsx
+- Added changelog.tsx (changelog modal implementation)

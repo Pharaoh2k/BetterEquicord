@@ -1,25 +1,23 @@
 /* eslint-disable simple-header/header */
 /*
  * Vencord, a modification for Discord's desktop app
- * Copyright (c) 2022 Vendicated and contributors
  *
- * BD Compatibility Layer plugin
- * Copyright (c) 2023-2025 Davvy and WhoIsThis
+ * BD Compatibility Layer plugin for Vencord
  * Copyright (c) 2025 Pharaoh2k
+ *
+ * See /CHANGES/CHANGELOG.txt for a list of changes by Pharaoh2k.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
+ * the Free Software Foundation, version 3 of the License only.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+ * See the LICENSE file in the Vencord repository root for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>.
-*/
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
 
 import { React, useMemo, useState } from "@webpack/common";
 

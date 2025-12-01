@@ -1,37 +1,27 @@
 /* eslint-disable simple-header/header */
 /*
  * Vencord, a modification for Discord's desktop app
- * Copyright (c) 2022 Vendicated and contributors
  *
- * BD Compatibility Layer plugin
- * Copyright (c) 2023-2025 Davvy and WhoIsThis
+ * BD Compatibility Layer plugin for Vencord
+ * Copyright (c) 2023-present Davvy and WhoIsThis
+ * Copyright (c) 2025 Pharaoh2k
+ *
+ * See /CHANGES/CHANGELOG.txt for a list of changes by Pharaoh2k.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
+ * the Free Software Foundation, version 3 of the License only.
  *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+ * See the LICENSE file in the Vencord repository root for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>.
- *
- * Modifications to BD Compatibility Layer:
- * Copyright (c) 2025 Pharaoh2k
- * - Added crypto polyfill implementation using @noble/hashes for BD plugin compatibility
- * - Added fixGhRaw() helper function for GitHub raw URL handling
- * - Changed ZenFS loading to use jsdelivr CDN instead of GitHub raw URLs
- * - Added FluxDispatcher-based navigation event handling for onSwitch compatibility
- * - Replaced FSUtils.mkdirSyncRecursive with native fs.mkdirSync recursive option
- * - Modified authors field to use direct object notation instead of Devs constants
- * - Commented code cleanup
-*/
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
 
-"use strict";
 /* eslint-disable eqeqeq */
+import * as VencordCommands from "@api/Commands";
 import { Settings } from "@api/Settings";
 import { copyToClipboard } from "@utils/clipboard";
 import { Devs } from "@utils/constants";
@@ -39,7 +29,6 @@ import definePlugin, { OptionType } from "@utils/types";
 import { React } from "@webpack/common";
 
 import { PluginMeta } from "~plugins";
-
 declare global {
     interface Window {
         BdCompatLayer?: any;
@@ -51,7 +40,6 @@ declare global {
         require?: any;
     }
 }
-
 import { ZENFS_BUILD_HASH } from "./constants";
 import { cleanupGlobal, createGlobalBdApi, getGlobalApi } from "./fakeBdApi";
 import { addContextMenu, addDiscordModules, FakeEventEmitter, fetchWithCorsProxyFallback, Patcher } from "./fakeStuff";
@@ -59,15 +47,12 @@ import { injectSettingsTabs, unInjectSettingsTab } from "./fileSystemViewer";
 import { addCustomPlugin, convertPlugin, removeAllCustomPlugins } from "./pluginConstructor";
 import { ReactUtils_filler } from "./stuffFromBD";
 import { aquireNative, compat_logger, FSUtils, getDeferred, reloadCompatLayer, simpleGET, ZIPUtils } from "./utils";
-
-
 // Store state outside the plugin definition since PluginDef doesn't allow custom properties
 const pluginState = {
     originalBuffer: {} as BufferConstructor,
     globalWasNotExisting: false,
     globalDefineWasNotExisting: false
 };
-
 export default definePlugin({
     name: "BD Compatibility Layer",
     description: "Converts BD plugins to run in Vencord",
@@ -84,13 +69,13 @@ export default definePlugin({
         corsProxyUrl: {
             description: "CORS proxy used to bypass CORS",
             type: OptionType.STRING,
-            default: "https://cors-get-proxy.sirjosh.workers.dev/?url=",
+            default: "", /* was https://cors-get-proxy.sirjosh.workers.dev/?url= */
             restartNeeded: true,
         },
         useIndexedDBInstead: {
             description: "Uses indexedDB instead of localStorage. It may cause memory usage issues but prevents exceeding localStorage quota. Note, after switching, you have to import your stuff back manually",
             type: OptionType.BOOLEAN,
-            default: false,
+            default: true, /* was false, true is better */
             restartNeeded: true,
         },
         useRealFsInstead: {
@@ -135,12 +120,23 @@ export default definePlugin({
             component() {
                 return React.createElement("div");
             }
+        },
+        themesStatus: {
+            description: "",
+            default: {},
+            type: OptionType.COMPONENT,
+            component() { return React.createElement("div"); }
+        },
+        bdCompatDebug: {
+            description: "Enable BDCompat debug logging (shows getter failures in console)",
+            type: OptionType.BOOLEAN,
+            default: false,
+            restartNeeded: true,
         }
     },
     start() {
         injectSettingsTabs();
         const reimplementationsReady = getDeferred<void>();
-
         let nobleReady = false;
         const noble: {
             sha256?: any;
@@ -148,58 +144,46 @@ export default definePlugin({
             sha1?: any;
             md5?: any;
         } = {};
-
         (async () => {
             try {
-                // Compatibility shim for BetterDiscord plugins that expect Node's crypto:
-                // we provide only the missing createHash() and randomBytes() for 1:1 parity.
-                //
-                // Implementation notes:
-                // - Prefer local bundling of @noble/hashes over runtime CDN imports.
-                //   Third-party CDNs require explicit CSP allowances and have integrity trade-offs.
-                //   If a CDN is unavoidable, pin exact versions and document CSP/import-map settings.
-                // - Hashing uses @noble/hashes (audited, 0-dep, streaming API). It's fast in practice;
-                //   actual bundle size depends on imported algorithms (e.g., sha256 ~5–6 KB unminified).
-                // - randomBytes() is backed by window.crypto.getRandomValues() (web CSPRNG).
-                //
-                // Scope & safety:
-                // - Intended for non-secret tasks (e.g., cache keys, file checksums, deduping).
-                //   We do NOT use this for protecting secrets, authentication, or long-term key storage.
-                // - Legacy hashes (md5/sha1) are provided only for compatibility checksums.
-                //
-                // Why not Web Crypto here?
-                // - We keep a synchronous Node-like surface for createHash(). Web Crypto's digest()
-                //   is async (Promise), which can break plugins expecting sync availability.
-                //
-                // References: MDN getRandomValues(), SubtleCrypto digest(), MDN non-security hashing guidance.
-
-
+                /* Compatibility shim for BetterDiscord plugins that expect Node's crypto:
+                   we provide only the missing createHash() and randomBytes() for 1:1 parity.
+                   Implementation notes:
+                   - Prefer local bundling of @noble/hashes over runtime CDN imports.
+                    Third-party CDNs require explicit CSP allowances and have integrity trade-offs.
+                     If a CDN is unavoidable, pin exact versions and document CSP/import-map settings.
+                   - Hashing uses @noble/hashes (audited, 0-dep, streaming API). It's fast in practice;
+                     actual bundle size depends on imported algorithms (e.g., sha256 ~5–6 KB unminified).
+                   - randomBytes() is backed by window.crypto.getRandomValues() (web CSPRNG).
+                   Scope & safety:
+                   - Intended for non-secret tasks (e.g., cache keys, file checksums, deduping).
+                    We do NOT use this for protecting secrets, authentication, or long-term key storage.
+                   - Legacy hashes (md5/sha1) are provided only for compatibility checksums.
+                   Why not Web Crypto here?
+                   - We keep a synchronous Node-like surface for createHash(). Web Crypto's digest()
+                     is async (Promise), which can break plugins expecting sync availability.
+                   References: MDN getRandomValues(), SubtleCrypto digest(), MDN non-security hashing guidance.
+                */
                 // @ts-ignore
                 const sha2Mod: any = await import(/* webpackIgnore: true */ "https://cdn.jsdelivr.net/npm/@noble/hashes@2.0.1/sha2.js/+esm");
-
                 // @ts-ignore
                 const legacyMod: any = await import(/* webpackIgnore: true */ "https://cdn.jsdelivr.net/npm/@noble/hashes@2.0.1/legacy.js/+esm");
-
                 noble.sha256 = sha2Mod.sha256;
                 noble.sha512 = sha2Mod.sha512;
                 noble.sha1 = legacyMod.sha1;
                 noble.md5 = legacyMod.md5;
-
                 nobleReady = true;
                 compat_logger.info("Crypto algorithms loaded (md5, sha1, sha256, sha512)");
             } catch (err) {
                 compat_logger.error("Failed to load crypto algorithms (noble/hashes):", err);
             }
         })();
-
         const proxyUrl = Settings.plugins["BD Compatibility Layer"]?.corsProxyUrl ?? "https://cors-get-proxy.sirjosh.workers.dev/?url=";
-
         // eslint-disable-next-line no-prototype-builtins
         if (!Settings.plugins["BD Compatibility Layer"]?.hasOwnProperty("pluginsStatus")) {
             Settings.plugins["BD Compatibility Layer"] = Settings.plugins["BD Compatibility Layer"] || {};
             Settings.plugins["BD Compatibility Layer"].pluginsStatus = {};
         }
-
         const reallyUsePoorlyMadeRealFs = false;
         if (!reallyUsePoorlyMadeRealFs) {
             fetch(
@@ -215,7 +199,6 @@ export default definePlugin({
                     const zen = globalThis.ZenFS_Aquire();
                     const ZenFs = zen.zenfs;
                     const ZenFsDom = zen.zenfs_dom;
-
                     const temp: any = {};
                     const target = {
                         browserFSSetting: {},
@@ -239,12 +222,9 @@ export default definePlugin({
                         };
                     }
                     ZenFs.configureSingle(target.browserFSSetting).then(
-
                         async () => {
                             if (target.client && target.client instanceof zen.RealFSClient) await target.client.ready;
-
                             ReImplementationObject.fs = ZenFs.fs;
-
                             const path = await (await fetch("https://cdn.jsdelivr.net/npm/path-browserify@1.0.1/index.js")).text();
                             const result = eval.call(window, "(()=>{const module = {};" + path + "return module.exports;})();\n//# sourceURL=betterDiscord://internal/path.js");
                             ReImplementationObject.path = result;
@@ -255,7 +235,6 @@ export default definePlugin({
                     );
                 });
         }
-
         else {
             const native = aquireNative();
             compat_logger.warn("Waiting for reimplementation object to be ready...");
@@ -270,7 +249,6 @@ export default definePlugin({
                     windowBdCompatLayer.fsReadyPromise.resolve();
             });
         }
-
         let _Router = null;
         const windowBdCompatLayer = {
             FSUtils,
@@ -292,7 +270,6 @@ export default definePlugin({
             queuedPlugins: [],
         };
         window.BdCompatLayer = windowBdCompatLayer;
-
         function fixGhRaw(url: string) {
             // https://github.com/<org>/<repo>/raw/<ref>/<path> -> https://raw.githubusercontent.com/<org>/<repo>/<ref>/<path>
             if (url.startsWith("https://github.com/") && url.includes("/raw/")) {
@@ -302,41 +279,49 @@ export default definePlugin({
             }
             return url;
         }
-
         window.GeneratedPlugins = [];
         const ReImplementationObject = {
             fs: {},
             path: {},
             https: {
-                get_(url: string, options, cb: (em: typeof FakeEventEmitter.prototype) => void) {
-                    const ev = new ReImplementationObject.events.EventEmitter();
-                    const ev2 = new ReImplementationObject.events.EventEmitter();
+                get_(url: string, options, callback) {
+                    // Handle optional options parameter
+                    if (typeof options === "function") {
+                        callback = options;
+                        options = null;
+                    }
+                    const responseEmitter = new ReImplementationObject.events();
+                    const requestEmitter = new ReImplementationObject.events();
                     const fetchResponse = fetchWithCorsProxyFallback(fixGhRaw(url), { ...options, method: "get" }, proxyUrl);
                     fetchResponse.then(async x => {
-                        ev2.emit("response", ev);
+                        requestEmitter.emit("response", responseEmitter);
                         if (x.body) {
                             const reader = x.body.getReader();
                             let result = await reader.read();
                             while (!result.done) {
-                                ev.emit("data", result.value);
+                                // Convert Uint8Array to Buffer for Node.js compatibility
+                                const chunk = Buffer.from(result.value);
+                                responseEmitter.emit("data", chunk);
                                 result = await reader.read();
                             }
                         }
-                        ev.emit("end", Object.assign({}, x, {
+                        responseEmitter.emit("end", {
                             statusCode: x.status,
                             headers: Object.fromEntries(x.headers.entries()),
-                        }));
+                        });
                     });
-                    cb(ev);
-                    fetchResponse.catch(reason => {
-                        // eslint-disable-next-line @typescript-eslint/dot-notation
-                        if (ev2.callbacks["error"]) // https://nodejs.org/api/http.html#class-httpclientrequest "For backward compatibility, res will only emit 'error' if there is an 'error' listener registered."
-                            ev2.emit("error", reason);
+                    callback(responseEmitter);
+                    fetchResponse.catch(error => {
+                        // Conditional error emission for Node.js backward compatibility
+                        // Check the Set-based events structure (not callbacks)
+                        if (requestEmitter.events.error?.size > 0) {
+                            requestEmitter.emit("error", error);
+                        }
                     });
-                    return ev2;
+                    return requestEmitter;
                 },
                 get get() {
-                    if (Settings.plugins["BD Compatibility Layer"]?.enableExperimentalRequestPolyfills === true)
+                    if (Settings.plugins["BD Compatibility Layer"].enableExperimentalRequestPolyfills === true)
                         return this.get_;
                     return undefined;
                 }
@@ -372,29 +357,39 @@ export default definePlugin({
                     return this.request_;
                 return undefined;
             },
-            events: {
-                EventEmitter: FakeEventEmitter,
+            events: FakeEventEmitter,
+            electron: {
+                get nativeModules() {
+                    return (VencordNative?.native as any)?.nativeModules ?? {};
+                },
+                get ipcRenderer() {
+                    return (window.require?.("electron") as any)?.ipcRenderer ?? {
+                        send: () => { },
+                        invoke: () => Promise.resolve(),
+                        on: () => { },
+                        once: () => { },
+                        removeListener: () => { },
+                    };
+                },
+                shell: {
+                    openExternal: (url: string) => window.open(url, "_blank"),
+                    openPath: () => Promise.resolve(""),
+                },
             },
-            electron: {},
-
             crypto: {
                 // Node-compatible: createHash('md5'|'sha1'|'sha256'|'sha512').update(...).digest([encoding])
                 createHash(algorithm: string) {
                     if (!nobleReady || !noble.sha256 || !noble.sha512 || !noble.sha1 || !noble.md5) {
                         throw new Error("Crypto not ready yet - noble/hashes still loading");
                     }
-
                     const algo = (algorithm || "").toLowerCase();
                     const impl =
                         algo === "sha256" ? (noble.sha256 as any) :
                             algo === "sha512" ? (noble.sha512 as any) :
                                 algo === "sha1" ? (noble.sha1 as any) :
                                     algo === "md5" ? (noble.md5 as any) : null;
-
                     if (!impl?.create) throw new Error(`Unsupported hash algorithm: ${algorithm}`);
-
                     const ctx = impl.create();
-
                     return {
                         update(data: Uint8Array | ArrayBuffer | string) {
                             let u8: Uint8Array;
@@ -410,13 +405,11 @@ export default definePlugin({
                         },
                         digest(encoding?: "hex" | "base64" | "latin1") {
                             const out: Uint8Array = ctx.digest();
-
                             if (encoding === "hex") {
                                 let s = "";
                                 for (let i = 0; i < out.length; i++) s += out[i].toString(16).padStart(2, "0");
                                 return s;
                             }
-
                             // Prefer Buffer when available (Discord/Electron envs)
                             // @ts-ignore
                             if (typeof Buffer !== "undefined") {
@@ -426,7 +419,6 @@ export default definePlugin({
                                 if (encoding === "latin1") return buf.toString("latin1");
                                 return buf;
                             }
-
                             // Fallbacks when Buffer isn't available:
                             if (encoding === "base64") {
                                 let binary = "";
@@ -442,7 +434,6 @@ export default definePlugin({
                         }
                     };
                 },
-
                 // Node-compatible: randomBytes(size[, callback])
                 randomBytes(size: number, cb?: (err: Error | null, buf: Uint8Array) => void) {
                     if (typeof size !== "number" || !Number.isFinite(size) || size < 0) {
@@ -456,18 +447,16 @@ export default definePlugin({
                         throw err;
                     }
                     cr.getRandomValues(out);
-
-                    // Node returns a Buffer; use Buffer if shim is present
+                    // Node returns a Buffer. use Buffer if shim is present
                     // @ts-ignore
                     const asBuf = (typeof Buffer !== "undefined" ? Buffer.from(out) : out);
                     if (cb) { cb(null, asBuf); return; }
                     return asBuf;
                 }
             },
-
             process: {
                 env: {
-                    // HOME: "/home/fake",
+                    NODE_ENV: "production",
                     _home_secret: "",
                     get HOME() {
                         if (reallyUsePoorlyMadeRealFs) {
@@ -484,6 +473,7 @@ export default definePlugin({
         const FakeRequireRedirect = (name: keyof typeof ReImplementationObject) => {
             return ReImplementationObject[name];
         };
+        window.process = ReImplementationObject.process as any;
         const BdApiReImplementation = createGlobalBdApi();
         window.BdApi = BdApiReImplementation;
         if (PluginMeta["BD Compatibility Layer"].userPlugin === true) {
@@ -518,7 +508,6 @@ export default definePlugin({
                 copy: copyToClipboard,
             };
         })();
-
         const injectedAndPatched = new Promise<void>((resolve, reject) => {
             ReactUtils_filler.setup({ React: React });
             addDiscordModules(proxyUrl).then(DiscordModulesInjectorOutput => {
@@ -537,7 +526,6 @@ export default definePlugin({
                 }, reject);
             }, reject);
         });
-
         const fakeLoading = document.createElement("span");
         fakeLoading.style.display = "none";
         fakeLoading.id = "bd-loading-icon";
@@ -551,6 +539,8 @@ export default definePlugin({
         fakeBdHead.appendChild(fakeBdStyles);
         const fakeBdScripts = document.createElement("bd-scripts");
         fakeBdHead.appendChild(fakeBdScripts);
+        const fakeBdThemes = document.createElement("bd-themes");
+        fakeBdHead.appendChild(fakeBdThemes);
         Promise.all([
             windowBdCompatLayer.fsReadyPromise.promise,
             injectedAndPatched,
@@ -563,6 +553,181 @@ export default definePlugin({
                 }, 100);
             })
         ]).then(() => {
+            // Shim to patch the Discord `App` wrapper to prevent BD plugins from throwing
+            // when native getters are missing or unstable. This relies on internal APIs and although the shim is technically robust
+            // it may break when Discord updates, but hey - tons of things may break across arbitrary Discord updates.
+            // Yeah, this is hacky, but this whole problem is hacky by nature and it's much better than letting plugins explode
+            (() => {
+                /* Normalize string-like truthy values into a real boolean. */
+                function coerceBool(v) {
+                    return typeof v === "string" ? /^(1|true|yes|on)$/i.test(v) : !!v;
+                }
+                /* Look for bdCompatDebug inside a plugin settings bag. */
+                function scanPluginsBag(bag) {
+                    if (!bag || typeof bag !== "object") return null;
+                    for (const k of Object.keys(bag)) {
+                        const v = bag[k];
+                        if (v && typeof v === "object" && ("bdCompatDebug" in v)) {
+                            return coerceBool(v.bdCompatDebug);
+                        }
+                    }
+                    return null;
+                }
+                /* Try to read bdCompatDebug from known settings locations. */
+                function readDebugFromSettings() {
+                    return (
+                        scanPluginsBag(window.Settings?.plugins) ??
+                        scanPluginsBag(window.Equicord?.settings?.plugins) ??
+                        scanPluginsBag(window.Vencord?.Settings?.plugins) ??
+                        null
+                    );
+                }
+                /* Allow bdcompat debug toggling via query string. */
+                function readDebugFromUrl() {
+                    try {
+                        const s = location?.search || "";
+                        const h = location?.hash || "";
+                        const extraQuery = h.includes("?") ? h.slice(h.indexOf("?")) : "";
+                        const all = new URLSearchParams(s + extraQuery);
+                        const list = (all.get("bdcompat") || "")
+                            .split(",")
+                            .map(x => x.trim().toLowerCase())
+                            .filter(Boolean);
+                        if (list.includes("debug")) return true;
+                        const qd = all.get("bdcompat-debug");
+                        if (qd != null) return coerceBool(qd);
+                    } catch {
+                        /* Ignore URL parsing issues. */
+                    }
+                    return null;
+                }
+                /* Global BDCompat container for flags and diagnostics. */
+                const BC = (window.BDCompat ||= { flags: {}, diag: { nativeAccessIssues: [] } });
+                if (typeof BC.flags !== "object" || !BC.flags) BC.flags = {};
+                /* Resolve debug flag in a stable order. */
+                const debugResolved =
+                    (typeof BC.flags.debug === "boolean" ? BC.flags.debug : null) ??
+                    readDebugFromSettings() ??
+                    readDebugFromUrl() ??
+                    false;
+                BC.flags.debug = !!debugResolved;
+                const DEBUG = BC.flags.debug;
+                const log = DEBUG ? (...a) => console.log("BD Compat Layer", ...a) : () => { };
+                const warn = DEBUG ? (...a) => console.warn("BD Compat Layer", ...a) : () => { };
+                /* Helpers to reach DiscordNative and the App wrapper module. */
+                const DN = () => (window.DiscordNative ?? {});
+                const getWebpack = () =>
+                    (window.BdApi && window.BdApi.Webpack) || window.Webpack;
+                const getApp = () =>
+                    getWebpack()?.getByKeys?.("setEnableHardwareAcceleration", "releaseChannel");
+                /* Fallback implementations for a few App getters. */
+                const fallbacks = {
+                    canBootstrapNewUpdater() {
+                        return !!DN().nativeModules?.canBootstrapNewUpdater;
+                    },
+                    releaseChannel() {
+                        return DN().remoteApp?.getReleaseChannel?.() ?? "";
+                    },
+                    architecture() {
+                        return DN().process?.arch ?? "";
+                    },
+                    parsedOSRelease() {
+                        const r = DN().os?.release;
+                        if (typeof r !== "string") return [];
+                        return r
+                            .split(".")
+                            .map(n => Number.parseInt(n, 10))
+                            .filter(Number.isFinite);
+                    }
+                };
+                /* In non debug mode, just install known safe getters. */
+                function installSafeReplacements(App) {
+                    for (const k of Object.keys(fallbacks)) {
+                        try {
+                            Object.defineProperty(App, k, {
+                                configurable: true,
+                                enumerable: true,
+                                get: fallbacks[k]
+                            });
+                        } catch {
+                            /* Non configurable properties are skipped. */
+                        }
+                    }
+                }
+                /* In debug mode, wrap all getters and harden them on first failure. */
+                function guardAllGetters(App) {
+                    const seen = new Set();
+                    const descs = Object.getOwnPropertyDescriptors(App);
+                    let wrapped = 0;
+                    for (const [key, d] of Object.entries(descs)) {
+                        if (!d || typeof d.get !== "function") continue;
+                        const original = d.get.bind(App);
+                        const fb = (key in fallbacks)
+                            ? fallbacks[key as keyof typeof fallbacks]
+                            : (() => undefined);
+                        try {
+                            Object.defineProperty(App, key, {
+                                configurable: true,
+                                enumerable: d.enumerable,
+                                get() {
+                                    try {
+                                        return original();
+                                    } catch (err) {
+                                        if (!seen.has(key)) {
+                                            seen.add(key);
+                                            warn(`Getter App.${key} threw, installing fallback`, err);
+                                        }
+                                        Object.defineProperty(App, key, {
+                                            configurable: true,
+                                            enumerable: d.enumerable,
+                                            get: fb
+                                        });
+                                        return fb();
+                                    }
+                                }
+                            });
+                            wrapped++;
+                        } catch {
+                            /* Skip non configurable accessors. */
+                        }
+                    }
+                    if (wrapped) {
+                        log(`Guarded ${wrapped} App accessor${wrapped > 1 ? "s" : ""}`);
+                    }
+                }
+                /* Choose patching strategy based on debug flag. */
+                function start(App) {
+                    if (DEBUG) {
+                        guardAllGetters(App);
+                    } else {
+                        installSafeReplacements(App);
+                    }
+                }
+                /* Try to locate App immediately, otherwise retry a few times. */
+                const tryStart = () => {
+                    const App = getApp();
+                    if (App) {
+                        start(App);
+                        return true;
+                    }
+                    return false;
+                };
+                if (!tryStart()) {
+                    let tries = 0;
+                    const iv = setInterval(() => {
+                        if (tryStart() || ++tries > 60) {
+                            clearInterval(iv);
+                            if (DEBUG && tries > 60) {
+                                warn("Could not locate native App wrapper, gave up patching");
+                            }
+                        }
+                    }, 100);
+                }
+                /* Breadcrumb in console when debug is enabled. */
+                if (DEBUG) {
+                    log("BDCompat.debug =", DEBUG);
+                }
+            })();
             getGlobalApi().DOM.addStyle("bd-compat-layer-stuff", ".bd-compat-setting .vc-plugins-setting-title { display: none; }");
             windowBdCompatLayer.Router?.listeners.add(windowBdCompatLayer.mainRouterListener);
             const FluxDispatcher = BdApiReImplementation.Webpack.getModule(m => m?.dispatch && m?.subscribe);
@@ -579,11 +744,9 @@ export default definePlugin({
                         }
                     });
                 };
-
                 ["CHANNEL_SELECT", "GUILD_SELECT", "LAYER_POP"].forEach(eventType => {
                     FluxDispatcher.subscribe(eventType, triggerOnSwitch);
                 });
-
                 compat_logger.info("BD-style navigation listeners initialized (simulating Electron IPC)");
             }
             const observer = new MutationObserver(mutations => mutations.forEach(m => window.GeneratedPlugins.forEach(p => BdApiReImplementation.Plugins.isEnabled(p.name) && p.instance.observer?.(m))));
@@ -593,7 +756,6 @@ export default definePlugin({
             });
             windowBdCompatLayer.mainObserver = observer;
             const localFs = window.require("fs");
-
             localFs.mkdirSync(BdApiReImplementation.Plugins.folder, { recursive: true });
             for (const key in this.options) {
                 if (Object.hasOwnProperty.call(this.options, key)) {
@@ -604,7 +766,6 @@ export default definePlugin({
                             const filenameFromUrl = response.responseURL
                                 .split("/")
                                 .pop();
-
                             localFs.writeFileSync(
                                 BdApiReImplementation.Plugins.folder +
                                 "/" +
@@ -621,7 +782,6 @@ export default definePlugin({
                     }
                 }
             }
-
             const pluginFolder = localFs
                 .readdirSync(BdApiReImplementation.Plugins.folder)
                 .sort();
@@ -637,6 +797,20 @@ export default definePlugin({
                 convertPlugin(pluginJS, element, true, BdApiReImplementation.Plugins.folder).then(plugin => {
                     addCustomPlugin(plugin);
                 });
+            }
+            if (!localFs.existsSync(BdApiReImplementation.Themes.folder)) {
+                FSUtils.mkdirSyncRecursive(BdApiReImplementation.Themes.folder);
+            }
+            // Load themes
+            const themeFolder = localFs.readdirSync(BdApiReImplementation.Themes.folder).filter(x => x.endsWith(".theme.css"));
+            for (const themeFile of themeFolder) {
+                const theme = BdApiReImplementation.Themes.loadTheme(themeFile);
+                if (theme) {
+                    const themeStates = Settings.plugins[this.name].themesStatus || {};
+                    if (themeStates[theme.id]) {
+                        BdApiReImplementation.Themes.enable(theme.id);
+                    }
+                }
             }
         });
         BdApiReImplementation.DOM.addStyle("OwOStylesOwO", `
@@ -666,7 +840,6 @@ export default definePlugin({
                 animation: 1s gobyebye cubic-bezier(0.39, 0.58, 0.57, 1) forwards;
                 right: 20px;
             }
-
             @keyframes gobyebye {
                 0% {
                     right: 20px;
@@ -710,6 +883,85 @@ export default definePlugin({
                 background: transparent;
             }
         `);
+        BdApiReImplementation.DOM.addStyle("bd-flex-styles", `
+            .bd-flex {
+                display: flex;
+            }
+            .bd-flex-align-start {
+                align-items: flex-start;
+            }
+            .bd-flex-align-end {
+                align-items: flex-end;
+            }
+            .bd-flex-align-center {
+                align-items: center;
+            }
+            .bd-flex-align-stretch {
+                align-items: stretch;
+            }
+            .bd-flex-align-baseline {
+                align-items: baseline;
+            }
+            .bd-flex-justify-start {
+                justify-content: flex-start;
+            }
+            .bd-flex-justify-end {
+                justify-content: flex-end;
+            }
+            .bd-flex-justify-center {
+                justify-content: center;
+            }
+            .bd-flex-justify-around {
+                justify-content: space-around;
+            }
+            .bd-flex-justify-between {
+                justify-content: space-between;
+            }
+            .bd-flex-no-wrap {
+                flex-wrap: nowrap;
+            }
+            .bd-flex-wrap {
+                flex-wrap: wrap;
+            }
+            .bd-flex-wrap-reverse {
+                flex-wrap: wrap-reverse;
+            }
+            .bd-flex-horizontal {
+                flex-direction: row;
+            }
+            .bd-flex-reverse {
+                flex-direction: row-reverse;
+            }
+            .bd-flex-vertical {
+                flex-direction: column;
+            }
+            .bd-flex-horizontal > .bd-flex,
+            .bd-flex-horizontal > .bd-flex-child {
+                margin-left: 10px;
+                margin-right: 10px;
+            }
+            .bd-flex-horizontal > .bd-flex:first-child,
+            .bd-flex-horizontal > .bd-flex-child:first-child {
+                margin-left: 0;
+            }
+            .bd-flex-horizontal > .bd-flex:last-child,
+            .bd-flex-horizontal > .bd-flex-child:last-child {
+                margin-right: 0;
+            }
+            .bd-flex-reverse > .bd-flex,
+            .bd-flex-reverse > .bd-flex-child {
+                margin-left: 10px;
+                margin-right: 10px;
+            }
+            .bd-flex-reverse > .bd-flex:first-child,
+            .bd-flex-reverse > .bd-flex-child:first-child {
+                margin-right: 0;
+            }
+            .bd-flex-reverse > .bd-flex:last-child,
+            .bd-flex-reverse > .bd-flex-child:last-child {
+                margin-left: 0;
+            }
+        `);
     },
     async stop() {
         compat_logger.warn("Disabling observer...");
@@ -741,6 +993,21 @@ export default definePlugin({
         compat_logger.warn("Removing compat layer...");
         delete window.BdCompatLayer;
         compat_logger.warn("Removing BdApi...");
+        compat_logger.warn("Unregistering all commands...");
+        try {
+            // Get all registered callers and unregister their commands
+            const api = getGlobalApi();
+            if (api?.Commands) {
+                // Clear all BD commands from Vencord's registry
+                Object.keys(VencordCommands.commands).forEach(name => {
+                    if (name.startsWith("bd-")) {
+                        VencordCommands.unregisterCommand(name);
+                    }
+                });
+            }
+        } catch (err) {
+            compat_logger.warn("Failed to unregister commands:", err);
+        }
         cleanupGlobal();
         delete window.BdApi;
         if (window.zip) {
@@ -751,5 +1018,10 @@ export default definePlugin({
         delete window.BrowserFS;
         compat_logger.warn("Restoring buffer...");
         window.Buffer = pluginState.originalBuffer;
+        getGlobalApi().DOM.removeStyle("bd-flex-styles");
+        compat_logger.warn("Disabling themes...");
+        getGlobalApi().Themes.getAll().forEach(t => {
+            if (t.enabled) getGlobalApi().Themes.disable(t.id);
+        });
     }
 });

@@ -25,6 +25,7 @@ export declare function getModule(filter: any, options?: any);
 export declare const ReactUtils_filler: {
     setup: (DiscordModules: any) => void;
     wrapElement: (element: HTMLElement) => void;
+    readonly rootInstance: any;
 };
 export declare class Patcher {
     static before(...args): any;

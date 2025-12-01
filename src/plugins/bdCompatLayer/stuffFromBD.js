@@ -1,44 +1,39 @@
 /* eslint-disable simple-header/header */
 /*
  * Vencord, a modification for Discord's desktop app
- * Copyright (c) 2022 Vendicated and contributors
  *
- * BD Compatibility Layer plugin
- * Copyright (c) 2023-2025 Davvy and WhoIsThis
+ * BD Compatibility Layer plugin for Vencord
+ * Copyright (c) 2023-present Davvy and WhoIsThis
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
+ * This file contains portions of code taken or derived from BetterDiscord
+ * (https://github.com/BetterDiscord/BetterDiscord), licensed under the
+ * Apache License, Version 2.0. The full text of that license is provided
+ * in /LICENSES/LICENSE.Apache-2.0.txt in this repository.
+ *
+ * The BetterDiscord-derived snippets are provided on an "AS IS" basis,
+ * without warranties or conditions of any kind. See the Apache License
+ * for details on permissions and limitations.
+ *
+ * This file is part of the BD Compatibility Layer plugin for Vencord.
+ * When distributed as part of Vencord, this plugin forms part of a work
+ * licensed under the terms of the GNU General Public License version 3
+ * only. See the LICENSE file in the Vencord repository root for details.
  *
  * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * but it is provided without any warranty; without even the implied
+ * warranties of merchantability or fitness for a particular purpose.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>.
-*/
-
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
 
 /* eslint-disable eqeqeq */
 /* eslint-disable no-prototype-builtins */
 /* globals BdApi window document Vencord console */
 /* eslint no-undef:error */
-/**
- * This file contains code taken from https://github.com/BetterDiscord/BetterDiscord
- * @see https://github.com/BetterDiscord/BetterDiscord/blob/main/LICENSE
- */
 !function () { };
 import { addLogger } from "./utils";
 const Logger = addLogger();
 
-/**
- * @summary Code taken from BetterDiscord (sourced from commit: cb08178b7702fe2612343f279c007eb2a638a113)
- * @description Changes:
- *
- *  Formatting changed
- */
 function monkeyPatch(what, methodName, options) {
     const { before, after, instead, once = false, callerId = "BdApi" } = options;
     const patchType = before ? "before" : after ? "after" : instead ? "instead" : "";
@@ -64,30 +59,11 @@ function monkeyPatch(what, methodName, options) {
     return data.cancelPatch;
 }
 
-/**
- * @summary Code taken from BetterDiscord (sourced from commit: cb08178b7702fe2612343f279c007eb2a638a113)
- * @description Changes:
- *
- *  Occurrences of "DiscordModules" replaced with "this.DiscordModules"
- *
- *  Occurrences of "WebpackModules" replaced with "BdApi.Webpack"
- *
- *  Added static method "setup"
- *
- *  Formatting changed
- */
 class Patcher {
     static setup(DiscordModules) {
         this.DiscordModules = DiscordModules;
     }
-
     static get patches() { return this._patches || (this._patches = []); }
-
-    /**
-     * Returns all the patches done by a specific caller
-     * @param {string} name - Name of the patch caller
-     * @method
-     */
     static getPatchesByCaller(name) {
         if (!name) return [];
         const patches = [];
@@ -98,27 +74,18 @@ class Patcher {
         }
         return patches;
     }
-
-    /**
-     * Unpatches all patches passed, or when a string is passed unpatches all
-     * patches done by that specific caller.
-     * @param {Array|string} patches - Either an array of patches to unpatch or a caller name
-     */
     static unpatchAll(patches) {
         if (typeof patches === "string") patches = this.getPatchesByCaller(patches);
-
         for (const patch of patches) {
             patch.unpatch();
         }
     }
-
     static resolveModule(module) {
         if (!module || typeof (module) === "function" || (typeof (module) === "object" && !Array.isArray(module))) return module;
         if (typeof module === "string") return this.DiscordModules[module];
         if (Array.isArray(module)) return BdApi.Webpack.findByUniqueProperties(module);
         return null;
     }
-
     static makeOverride(patch) {
         return function () {
             let returnValue;
@@ -131,7 +98,6 @@ class Patcher {
                     Logger.err("Patcher", `Could not fire before callback of ${patch.functionName} for ${superPatch.caller}`, err);
                 }
             }
-
             const insteads = patch.children.filter(c => c.type === "instead");
             if (!insteads.length) { returnValue = patch.originalFunction.apply(this, arguments); }
             else {
@@ -145,7 +111,6 @@ class Patcher {
                     }
                 }
             }
-
             for (const slavePatch of patch.children.filter(c => c.type === "after")) {
                 try {
                     const tempReturn = slavePatch.callback(this, arguments, returnValue);
@@ -158,11 +123,9 @@ class Patcher {
             return returnValue;
         };
     }
-
     static rePatch(patch) {
         patch.proxyFunction = patch.module[patch.functionName] = this.makeOverride(patch);
     }
-
     static makePatch(module, functionName, name) {
         const patch = {
             name,
@@ -170,7 +133,7 @@ class Patcher {
             functionName,
             originalFunction: module[functionName],
             proxyFunction: null,
-            revert: () => { // Calling revert will destroy any patches added to the same module after this
+            revert: () => {
                 patch.module[patch.functionName] = patch.originalFunction;
                 patch.proxyFunction = null;
                 patch.children = [];
@@ -185,94 +148,17 @@ class Patcher {
         this.patches.push(patch);
         return patch;
     }
-
-    /**
-     * Function with no arguments and no return value that may be called to revert changes made by {@link module:Patcher}, restoring (unpatching) original method.
-     * @callback module:Patcher~unpatch
-     */
-
-    /**
-     * A callback that modifies method logic. This callback is called on each call of the original method and is provided all data about original call. Any of the data can be modified if necessary, but do so wisely.
-     *
-     * The third argument for the callback will be `undefined` for `before` patches. `originalFunction` for `instead` patches and `returnValue` for `after` patches.
-     *
-     * @callback module:Patcher~patchCallback
-     * @param {object} thisObject - `this` in the context of the original function.
-     * @param {arguments} args - The original arguments of the original function.
-     * @param {(function|*)} extraValue - For `instead` patches, this is the original function from the module. For `after` patches, this is the return value of the function.
-     * @return {*} Makes sense only when using an `instead` or `after` patch. If something other than `undefined` is returned, the returned value replaces the value of `returnValue`. If used for `before` the return value is ignored.
-     */
-
-    /**
-     * This method patches onto another function, allowing your code to run beforehand.
-     * Using this, you are also able to modify the incoming arguments before the original method is run.
-     *
-     * @param {string} caller - Name of the caller of the patch function. Using this you can undo all patches with the same name using {@link module:Patcher.unpatchAll}. Use `""` if you don't care.
-     * @param {object} moduleToPatch - Object with the function to be patched. Can also patch an object's prototype.
-     * @param {string} functionName - Name of the method to be patched
-     * @param {module:Patcher~patchCallback} callback - Function to run before the original method
-     * @param {object} options - Object used to pass additional options.
-     * @param {string} [options.displayName] You can provide meaningful name for class/object provided in `what` param for logging purposes. By default, this function will try to determine name automatically.
-     * @param {boolean} [options.forcePatch=true] Set to `true` to patch even if the function doesnt exist. (Adds noop function in place).
-     * @return {module:Patcher~unpatch} Function with no arguments and no return value that should be called to cancel (unpatch) this patch. You should save and run it when your plugin is stopped.
-     */
     static before(caller, moduleToPatch, functionName, callback, options = {}) { return this.pushChildPatch(caller, moduleToPatch, functionName, callback, Object.assign(options, { type: "before" })); }
-
-    /**
-     * This method patches onto another function, allowing your code to run after.
-     * Using this, you are also able to modify the return value, using the return of your code instead.
-     *
-     * @param {string} caller - Name of the caller of the patch function. Using this you can undo all patches with the same name using {@link module:Patcher.unpatchAll}. Use `""` if you don't care.
-     * @param {object} moduleToPatch - Object with the function to be patched. Can also patch an object's prototype.
-     * @param {string} functionName - Name of the method to be patched
-     * @param {module:Patcher~patchCallback} callback - Function to run instead of the original method
-     * @param {object} options - Object used to pass additional options.
-     * @param {string} [options.displayName] You can provide meaningful name for class/object provided in `what` param for logging purposes. By default, this function will try to determine name automatically.
-     * @param {boolean} [options.forcePatch=true] Set to `true` to patch even if the function doesnt exist. (Adds noop function in place).
-     * @return {module:Patcher~unpatch} Function with no arguments and no return value that should be called to cancel (unpatch) this patch. You should save and run it when your plugin is stopped.
-     */
     static after(caller, moduleToPatch, functionName, callback, options = {}) { return this.pushChildPatch(caller, moduleToPatch, functionName, callback, Object.assign(options, { type: "after" })); }
-
-    /**
-     * This method patches onto another function, allowing your code to run instead.
-     * Using this, you are also able to modify the return value, using the return of your code instead.
-     *
-     * @param {string} caller - Name of the caller of the patch function. Using this you can undo all patches with the same name using {@link module:Patcher.unpatchAll}. Use `""` if you don't care.
-     * @param {object} moduleToPatch - Object with the function to be patched. Can also patch an object's prototype.
-     * @param {string} functionName - Name of the method to be patched
-     * @param {module:Patcher~patchCallback} callback - Function to run after the original method
-     * @param {object} options - Object used to pass additional options.
-     * @param {string} [options.displayName] You can provide meaningful name for class/object provided in `what` param for logging purposes. By default, this function will try to determine name automatically.
-     * @param {boolean} [options.forcePatch=true] Set to `true` to patch even if the function doesnt exist. (Adds noop function in place).
-     * @return {module:Patcher~unpatch} Function with no arguments and no return value that should be called to cancel (unpatch) this patch. You should save and run it when your plugin is stopped.
-     */
     static instead(caller, moduleToPatch, functionName, callback, options = {}) { return this.pushChildPatch(caller, moduleToPatch, functionName, callback, Object.assign(options, { type: "instead" })); }
-
-    /**
-     * This method patches onto another function, allowing your code to run before, instead or after the original function.
-     * Using this you are able to modify the incoming arguments before the original function is run as well as the return
-     * value before the original function actually returns.
-     *
-     * @param {string} caller - Name of the caller of the patch function. Using this you can undo all patches with the same name using {@link module:Patcher.unpatchAll}. Use `""` if you don't care.
-     * @param {object} moduleToPatch - Object with the function to be patched. Can also patch an object's prototype.
-     * @param {string} functionName - Name of the method to be patched
-     * @param {module:Patcher~patchCallback} callback - Function to run after the original method
-     * @param {object} options - Object used to pass additional options.
-     * @param {string} [options.type=after] - Determines whether to run the function `before`, `instead`, or `after` the original.
-     * @param {string} [options.displayName] You can provide meaningful name for class/object provided in `what` param for logging purposes. By default, this function will try to determine name automatically.
-     * @param {boolean} [options.forcePatch=true] Set to `true` to patch even if the function doesnt exist. (Adds noop function in place).
-     * @return {module:Patcher~unpatch} Function with no arguments and no return value that should be called to cancel (unpatch) this patch. You should save and run it when your plugin is stopped.
-     */
     static pushChildPatch(caller, moduleToPatch, functionName, callback, options = {}) {
         const { type = "after", forcePatch = true } = options;
         const module = this.resolveModule(moduleToPatch);
         if (!module) return null;
         if (!module[functionName] && forcePatch) module[functionName] = function () { };
         if (!(module[functionName] instanceof Function)) return null;
-
         if (typeof moduleToPatch === "string") options.displayName = moduleToPatch;
         const displayName = options.displayName || module.displayName || module.name || module.constructor.displayName || module.constructor.name;
-
         const patchId = `${displayName}.${functionName}`;
         const patch = this.patches.find(p => p.module == module && p.functionName == functionName) || this.makePatch(module, functionName, patchId);
         if (!patch.proxyFunction) this.rePatch(patch);
@@ -295,25 +181,25 @@ class Patcher {
         patch.counter++;
         return child.unpatch;
     }
-
 }
 
-/**
- * @summary Code taken from BetterDiscord (sourced from commit: cb08178b7702fe2612343f279c007eb2a638a113)
- * @description Changes:
- *
- *  None
- */
-const hasThrown = new WeakSet();
+const TypedArray = Object.getPrototypeOf(Uint8Array);
+function shouldSkipModule(exports) {
+    if (!exports) return true;
+    if (exports.TypedArray) return true;
+    if (exports === window) return true;
+    if (exports === document.documentElement) return true;
+    if (exports[Symbol.toStringTag] === "DOMTokenList") return true;
+    if (exports === Symbol) return true;
+    if (exports instanceof Window) return true;
+    if (exports instanceof TypedArray) return true;
+    return false;
+}
 
-/**
- * @summary Code taken from BetterDiscord (sourced from commit: cb08178b7702fe2612343f279c007eb2a638a113)
- * @description Changes:
- *
- *  Formatting changed
- */
+const hasThrown = new WeakSet();
 const wrapFilter = filter => (exports, module, moduleId) => {
     try {
+        if (exports instanceof Window) return false;
         if (exports?.default?.remove && exports?.default?.set && exports?.default?.clear && exports?.default?.get && !exports?.default?.sort) return false;
         if (exports.remove && exports.set && exports.clear && exports.get && !exports.sort) return false;
         if (exports?.default?.getToken || exports?.default?.getEmail || exports?.default?.showToken) return false;
@@ -327,156 +213,45 @@ const wrapFilter = filter => (exports, module, moduleId) => {
     }
 };
 
-/**
- * BD's exact getDefaultKey function
- * added: Check that exports is an object
- */
-function getDefaultKey(module) {
-    if (!module?.exports) return undefined;
-
-    // Check that exports is an object (not a string, number, etc.)
-    if (typeof module.exports !== "object" || module.exports === null) {
-        return undefined;
-    }
-
-    if ("Z" in module.exports) return "Z";
-    if ("ZP" in module.exports) return "ZP";
-    if (module.exports.__esModule && "default" in module.exports) return "default";
-    return undefined;
-}
-
-/**
- * Creates a synthetic wrapper for bare function exports
- */
-function asBdWrapper(found) {
-    if (found && typeof found === "object") return found;
-
-    if (typeof found === "function") {
-        const wrapper = Object.create(null);
-        Object.defineProperties(wrapper, {
-            Z: { value: found, enumerable: true },
-            ZP: { value: found, enumerable: true },
-            default: { value: found, enumerable: true }
-        });
-        return wrapper;
-    }
-
-    return found;
-}
-
-/**
- * @summary Code taken from BetterDiscord (sourced from commit: cb08178b7702fe2612343f279c007eb2a638a113)
- * @description Changes:
- *
- *  Occurrences of "this.getAllModules()" replaced with "Vencord.Webpack.cache"
- *
- *  Formatting changed
- */
 function getModule(filter, options = {}) {
-    const { first = true, defaultExport = true, searchExports = false, searchDefault = true, raw = false } = options;
-    // Debug log for YABDP4Nitro calls
-    if (filter && filter.toString().includes("x=>x")) {
-        console.log("[TXDBG] getModule called with x=>x filter, options:", options);
-    }
+    const { first = true, defaultExport = true, searchExports = false, raw = false } = options;
     const wrappedFilter = wrapFilter(filter);
-
     const modules = Vencord.Webpack.cache;
-    const rm = []; // Collect all matches when first = false
+    const rm = [];
     const indices = Object.keys(modules);
-
     for (let i = 0; i < indices.length; i++) {
         const index = indices[i];
         if (!modules.hasOwnProperty(index)) continue;
-
         let module = null;
         try { module = modules[index]; } catch { continue; }
-
         const { exports } = module;
-        if (!exports || exports === window || exports === document.documentElement || exports[Symbol.toStringTag] === "DOMTokenList") continue;
-
-        // Handle bare function exports
-        if (typeof exports === "function") {
-            if (wrappedFilter(exports, module, index)) {
-                const result = !defaultExport ? asBdWrapper(exports) : exports;
-                if (first) return raw ? module : result;
-                rm.push(raw ? module : result);
+        if (shouldSkipModule(exports)) continue;
+        if (typeof (exports) === "object" && searchExports && !exports.TypedArray) {
+            for (const key in exports) {
+                let foundModule = null;
+                let wrappedExport = null;
+                try { wrappedExport = exports[key]; } catch { continue; }
+                if (!wrappedExport) continue;
+                if (wrappedFilter(wrappedExport, module, index)) foundModule = wrappedExport;
+                if (!foundModule) continue;
+                if (raw) foundModule = module;
+                if (first) return foundModule;
+                rm.push(foundModule);
             }
-
-            // Also search function's own properties if searchExports is true
-            if (searchExports && typeof exports === "object" && exports !== null) {
-                const keys = Reflect.ownKeys(exports);
-                for (let j = 0; j < keys.length; j++) {
-                    const key = keys[j];
-
-                    const descriptor = Object.getOwnPropertyDescriptor(exports, key);
-                    let exported;
-
-                    try {
-                        exported = descriptor && descriptor.get
-                            ? descriptor.get.call(exports)
-                            : exports[key];
-                    } catch { continue; }
-
-                    if (!exported) continue;
-
-                    if (wrappedFilter(exported, module, index)) {
-                        const result = exported;
-                        if (first) return raw ? module : result;
-                        rm.push(raw ? module : result);
-                    }
-                }
-            }
-            continue;
         }
-
-        // Handle normal object exports
-        if (wrappedFilter(exports, module, index)) {
-            if (first) return raw ? module : exports;
-            rm.push(raw ? module : exports);
-        }
-
-        if (!searchExports && !searchDefault) continue;
-
-        const defaultKey = getDefaultKey(module);
-        const searchKeys = [];
-
-        if (searchExports) {
-            // Only use Reflect.ownKeys if exports is an object
-            if (typeof exports === "object" && exports !== null) {
-                searchKeys.push(...Reflect.ownKeys(exports));
-            }
-        } else if (searchDefault && defaultKey) {
-            searchKeys.push(defaultKey);
-        }
-
-        for (let j = 0; j < searchKeys.length; j++) {
-            const key = searchKeys[j];
-
-            const descriptor = Object.getOwnPropertyDescriptor(exports, key);
-            let exported;
-
-            try {
-                exported = descriptor && descriptor.get
-                    ? descriptor.get.call(exports)
-                    : exports[key];
-            } catch { continue; }
-
-            if (!exported) continue;
-
-            if (wrappedFilter(exported, module, index)) {
-                // Return wrapper when defaultExport is false and we matched the default
-                if (!defaultExport && key === defaultKey) {
-                    if (first) return exports;
-                    rm.push(exports);
-                } else {
-                    if (first) return raw ? module : exported;
-                    rm.push(raw ? module : exported);
-                }
-            }
+        else {
+            let foundModule = null;
+            if (exports.Z && wrappedFilter(exports.Z, module, index)) foundModule = defaultExport ? exports.Z : exports;
+            if (exports.ZP && wrappedFilter(exports.ZP, module, index)) foundModule = defaultExport ? exports.ZP : exports;
+            if (exports.__esModule && exports.default && wrappedFilter(exports.default, module, index)) foundModule = defaultExport ? exports.default : exports;
+            if (wrappedFilter(exports, module, index)) foundModule = exports;
+            if (!foundModule) continue;
+            if (raw) foundModule = module;
+            if (first) return foundModule;
+            rm.push(foundModule);
         }
     }
-
-    return first ? undefined : rm;
+    return first || rm.length == 0 ? undefined : rm;
 }
 
 const ReactUtils_filler = {
@@ -484,14 +259,9 @@ const ReactUtils_filler = {
     setup(DiscordModules) {
         this.DiscordModules = DiscordModules;
     },
-    /**
-     * @summary Code taken from BetterDiscord (sourced from commit: 9f08d7cbf5d41c24bb00d3575cf820d7e17a4039)
-     * @description Changes:
-     *
-     *  Added local DiscordModules destructure from `this`.
-     *
-     *  Formatting changed
-     */
+    get rootInstance() {
+        return document.getElementById("app-mount")?._reactRootContainer?._internalRoot?.current;
+    },
     wrapElement(element) {
         const { DiscordModules } = this;
         return class ReactWrapper extends DiscordModules.React.Component {
