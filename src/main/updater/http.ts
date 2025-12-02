@@ -20,13 +20,15 @@ import { fetchBuffer, fetchJson } from "@main/utils/http";
 import { IpcEvents } from "@shared/IpcEvents";
 import { VENCORD_USER_AGENT } from "@shared/vencordUserAgent";
 import { ipcMain } from "electron";
-import { writeFileSync as originalWriteFileSync } from "original-fs";
+// import { writeFileSync as originalWriteFileSync } from "original-fs";
+import { writeFile } from "fs/promises";
+import { join } from "path";
 
 import gitHash from "~git-hash";
 import gitRemote from "~git-remote";
 
 import { ASAR_FILE, serializeErrors } from "./common";
-import { join } from "path";
+
 
 const API_BASE = `https://api.github.com/repos/${gitRemote}`;
 let PendingUpdate: string | null = null;
@@ -72,8 +74,8 @@ async function fetchUpdates() {
 async function applyUpdates() {
     if (!PendingUpdate) return true;
 
-    const data = await fetchBuffer(PendingUpdate);
-    originalWriteFileSync(join(__dirname, ASAR_FILE), data);
+    const filePath = join(__dirname, ASAR_FILE);
+    await writeFile(filePath, data);
 
     PendingUpdate = null;
 
