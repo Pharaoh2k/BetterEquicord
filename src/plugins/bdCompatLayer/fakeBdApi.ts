@@ -28,7 +28,7 @@
  *
  * SPDX-License-Identifier: GPL-3.0-only
  */
-//TLH
+//TLH 
 import { showNotification as VencordShowNotification } from "@api/Notifications";
 import { Settings } from "@api/Settings";
 const VenComponents = OptionComponentMap;
