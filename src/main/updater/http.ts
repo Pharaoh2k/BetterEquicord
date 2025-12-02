@@ -29,6 +29,8 @@ import gitRemote from "~git-remote";
 
 import { ASAR_FILE, serializeErrors } from "./common";
 
+import { dialog } from "electron"; //DEBUGGING
+
 const API_BASE = `https://api.github.com/repos/${gitRemote}`;
 let PendingUpdate: string | null = null;
 
@@ -70,9 +72,9 @@ async function fetchUpdates() {
 }
 
 async function applyUpdates() {
-    console.log("[Updater] DEBUG - applyUpdates starting");
+    dialog.showMessageBoxSync({ message: "[Updater] DEBUG - applyUpdates starting" });
     if (!PendingUpdate) return true;
-    console.log("[Updater] DEBUG - passed first IF");
+    dialog.showMessageBoxSync({ message: "[Updater] DEBUG - passed first IF" });
 
     const data = await fetchBuffer(PendingUpdate);
 
