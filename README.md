@@ -53,7 +53,7 @@ Clone Equicord:
 
 ```shell
 git clone https://github.com/Pharaoh2k/BetterEquicord
-cd Equicord
+cd BetterEquicord
 ```
 
 Install dependencies:
