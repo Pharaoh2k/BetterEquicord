@@ -29,7 +29,6 @@ import gitRemote from "~git-remote";
 
 import { ASAR_FILE, serializeErrors } from "./common";
 
-
 const API_BASE = `https://api.github.com/repos/${gitRemote}`;
 let PendingUpdate: string | null = null;
 
