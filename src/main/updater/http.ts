@@ -15,7 +15,7 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
-
+  
 import { fetchBuffer, fetchJson } from "@main/utils/http";
 import { IpcEvents } from "@shared/IpcEvents";
 import { VENCORD_USER_AGENT } from "@shared/vencordUserAgent";
