@@ -70,12 +70,14 @@ async function fetchUpdates() {
 }
 
 async function applyUpdates() {
+    console.log("[Updater] DEBUG - applyUpdates STARTING", filePath);
     if (!PendingUpdate) return true;
+    console.log("[Updater] DEBUG - applyUpdates PASSED FIRST CHECK", filePath);
 
     const data = await fetchBuffer(PendingUpdate);
 
     const filePath = join(__dirname, ASAR_FILE);
-    console.log("[Updater] Writing update to:", filePath);
+    console.log("[Updater] DEBUG - Writing update to:", filePath);
     await writeFile(filePath, data);
 
     PendingUpdate = null;
