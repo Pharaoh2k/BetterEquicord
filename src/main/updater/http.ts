@@ -19,7 +19,7 @@
 import { fetchBuffer, fetchJson } from "@main/utils/http";
 import { IpcEvents } from "@shared/IpcEvents";
 import { VENCORD_USER_AGENT } from "@shared/vencordUserAgent";
-import { ipcMain, dialog } from "electron";  //DEBUGGING - added dialog
+import { ipcMain } from "electron";
 // import { writeFileSync as originalWriteFileSync } from "original-fs";
 import { writeFile } from "fs/promises";
 import { join } from "path";
@@ -70,18 +70,14 @@ async function fetchUpdates() {
 }
 
 async function applyUpdates() {
-    dialog.showMessageBoxSync({ message: "[Updater] DEBUG - applyUpdates starting" });
     if (!PendingUpdate) return true;
-    dialog.showMessageBoxSync({ message: "[Updater] DEBUG - passed first IF" });
 
     const data = await fetchBuffer(PendingUpdate);
+    const filePath = join(__dirname, "..", ASAR_FILE);
 
-    const filePath = join(__dirname, ASAR_FILE);
-    console.log("[Updater] Writing update to:", filePath);
     await writeFile(filePath, data);
 
     PendingUpdate = null;
-
     return true;
 }
 
