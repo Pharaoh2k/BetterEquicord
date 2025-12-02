@@ -29,7 +29,6 @@ import gitRemote from "~git-remote";
 
 import { ASAR_FILE, serializeErrors } from "./common";
 
-
 const API_BASE = `https://api.github.com/repos/${gitRemote}`;
 let PendingUpdate: string | null = null;
 
@@ -71,14 +70,14 @@ async function fetchUpdates() {
 }
 
 async function applyUpdates() {
-    console.log("[Updater] DEBUG - applyUpdates STARTING", filePath);
+    console.log("[Updater] DEBUG - applyUpdates starting");
     if (!PendingUpdate) return true;
-    console.log("[Updater] DEBUG - applyUpdates PASSED FIRST CHECK", filePath);
+    console.log("[Updater] DEBUG - passed first IF");
 
     const data = await fetchBuffer(PendingUpdate);
 
     const filePath = join(__dirname, ASAR_FILE);
-    console.log("[Updater] DEBUG - Writing update to:", filePath);
+    console.log("[Updater] Writing update to:", filePath);
     await writeFile(filePath, data);
 
     PendingUpdate = null;
