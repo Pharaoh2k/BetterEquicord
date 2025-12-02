@@ -19,7 +19,7 @@
 import { fetchBuffer, fetchJson } from "@main/utils/http";
 import { IpcEvents } from "@shared/IpcEvents";
 import { VENCORD_USER_AGENT } from "@shared/vencordUserAgent";
-import { ipcMain } from "electron";
+import { ipcMain, dialog } from "electron";  //DEBUGGING - added dialog
 // import { writeFileSync as originalWriteFileSync } from "original-fs";
 import { writeFile } from "fs/promises";
 import { join } from "path";
@@ -28,8 +28,6 @@ import gitHash from "~git-hash";
 import gitRemote from "~git-remote";
 
 import { ASAR_FILE, serializeErrors } from "./common";
-
-import { dialog } from "electron"; //DEBUGGING
 
 const API_BASE = `https://api.github.com/repos/${gitRemote}`;
 let PendingUpdate: string | null = null;
