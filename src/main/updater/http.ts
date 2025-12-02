@@ -76,6 +76,7 @@ async function applyUpdates() {
     const data = await fetchBuffer(PendingUpdate);
 
     const filePath = join(__dirname, ASAR_FILE);
+    console.log("[Updater] Writing update to:", filePath);
     await writeFile(filePath, data);
 
     PendingUpdate = null;
