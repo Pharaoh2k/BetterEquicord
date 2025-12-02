@@ -64,7 +64,6 @@ async function fetchUpdates() {
     if (hash === gitHash)
         return false;
 
-
     const asset = data.assets.find(a => a.name === ASAR_FILE);
     PendingUpdate = asset.browser_download_url;
 
@@ -73,6 +72,8 @@ async function fetchUpdates() {
 
 async function applyUpdates() {
     if (!PendingUpdate) return true;
+
+    const data = await fetchBuffer(PendingUpdate);
 
     const filePath = join(__dirname, ASAR_FILE);
     await writeFile(filePath, data);
