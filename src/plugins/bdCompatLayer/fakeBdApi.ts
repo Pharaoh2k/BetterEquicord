@@ -161,11 +161,21 @@ class FluxCompatibleStore {
 }
 
 /**
+ * React exotic component type symbols for unwrapping.
+ * These match BetterDiscord's implementation from PR #2007.
+ */
+const exoticComponents = {
+    memo: Symbol.for("react.memo"),
+    forwardRef: Symbol.for("react.forward_ref"),
+    lazy: Symbol.for("react.lazy")
+};
+
+/**
  * Unwraps a React component to get its inner type.
- * Handles memo, forwardRef, and lazy wrappers using structural checks.
+ * Handles memo, forwardRef, and lazy wrappers using Symbol comparisons.
  *
- * Uses Vencord's pattern of checking .type and .render instead of
- * explicit Symbol comparisons for robustness.
+ * This implementation matches BetterDiscord's ReactUtils.getType from PR #2007,
+ * using explicit Symbol comparisons for robustness.
  *
  * Also handles Vencord's own LazyComponent wrapper via $$vencordGetWrappedComponent.
  *
@@ -188,23 +198,91 @@ function getReactComponentType(component: any): any {
         if (unwrapped) inner = unwrapped;
     }
 
-    // Loop while we have a React wrapper ($$typeof indicates memo/forwardRef/lazy/etc.)
-    // This matches Vencord's pattern in filters.componentByCode
-    while (inner != null && inner.$$typeof) {
-        if (inner.type) {
-            // memo, lazy, or other wrapper using .type
+    // Loop using explicit Symbol comparisons (matches BD's getType implementation)
+    while (true) {
+        const typeOf = inner?.$$typeof;
+        
+        if (typeOf === exoticComponents.memo) {
+            // React.memo wraps with .type
             inner = inner.type;
-        } else if (inner.render) {
-            // forwardRef
+        } else if (typeOf === exoticComponents.forwardRef) {
+            // React.forwardRef wraps with .render
             inner = inner.render;
+        } else if (typeOf === exoticComponents.lazy) {
+            // React.lazy - check if resolved
+            const payload = inner._payload;
+            if (payload?._status === 1) {
+                // Resolved lazy component
+                inner = payload._result?.default ?? payload._result;
+            } else {
+                // Not resolved yet, return a no-op function
+                // This matches BD's behavior
+                return () => {};
+            }
         } else {
-            // Unknown wrapper type, stop unwrapping
+            // Not a wrapper type we recognize, return as-is
             break;
         }
     }
 
     return inner;
 }
+
+/**
+ * Error message thrown when hooks are called outside of render context.
+ * Used by wrapInHooks to detect and suppress this specific error.
+ */
+const HOOKS_ERR_MSG = "Cannot read properties of null (reading 'useState')";
+const USE_ERR_MSG = "Cannot read properties of null (reading 'use')";
+
+/**
+ * Patched React hooks for use with wrapInHooks.
+ * These implementations provide safe fallbacks when hooks are called
+ * outside the normal React render context.
+ *
+ * Matches BetterDiscord's patchedReactHooks implementation.
+ */
+const patchedReactHooks: Record<string, (...args: any[]) => any> = {
+    useMemo(factory: () => any) {
+        return factory();
+    },
+    useState(initialState: any) {
+        if (typeof initialState === "function") {
+            initialState = initialState();
+        }
+        return [initialState, () => {}];
+    },
+    useReducer(reducer: any, initialArg: any, init?: (arg: any) => any) {
+        const initialState = init ? init(initialArg) : initialArg;
+        return [initialState, () => {}];
+    },
+    useEffect() {},
+    useLayoutEffect() {},
+    useRef(initialValue: any) {
+        return { current: initialValue };
+    },
+    useCallback(callback: any) {
+        return callback;
+    },
+    useContext(context: any) {
+        return context._currentValue;
+    },
+    useImperativeHandle() {},
+    useDebugValue() {},
+    useDeferredValue(value: any) {
+        return value;
+    },
+    useTransition() {
+        return [false, (callback: () => void) => callback()];
+    },
+    useId() {
+        return "";
+    },
+    useSyncExternalStore(_subscribe: any, getSnapshot: () => any) {
+        return getSnapshot();
+    },
+    useInsertionEffect() {},
+};
 
 function resolvePluginByAny(idOrFile: string): AssembledBetterDiscordPlugin | undefined {
     const all = [
@@ -753,6 +831,13 @@ const getOptions = (args: any[], defaultOptions = {}) => {
     }
     return defaultOptions;
 };
+
+/**
+ * Creates an exception for webpack module search failures.
+ * Matches BetterDiscord's makeException from webpack/shared.ts
+ */
+const makeWebpackException = () => new Error("Module search failed!");
+
 export const WebpackHolder = {
     Filters: {
         byDisplayName: name => module => module && module.displayName === name,
@@ -872,12 +957,24 @@ export const WebpackHolder = {
         });
     },
     getLazy(filter, options: any = {}) {
-        const { signal: abortSignal, defaultExport = true, searchExports = false, raw = false } = options;
+        const { signal: abortSignal, defaultExport = true, searchExports = false, raw = false, fatal = false } = options;
+        
+        // Early abort check - matches BD's implementation from PR #2007
+        if (abortSignal?.aborted) {
+            if (fatal) return Promise.reject(makeWebpackException());
+            return Promise.resolve(undefined);
+        }
+        
         const fromCache = this.getModule(filter, { defaultExport, searchExports });
         if (fromCache) return Promise.resolve(fromCache);
-        return new Promise(resolve => {
+        
+        return new Promise((resolve, reject) => {
             const cancel = () => {
-                resolve(undefined);
+                if (fatal) {
+                    reject(makeWebpackException());
+                } else {
+                    resolve(undefined);
+                }
             };
             Vencord.Webpack.waitFor(filter, () => {
                 const result = this.getModule(filter, { defaultExport, searchExports });
@@ -1065,6 +1162,11 @@ export const WebpackHolder = {
     getBulk(...mapping: { filter: (m: any) => unknown, searchExports?: boolean, defaultExport?: boolean, searchDefault?: boolean, raw?: boolean, all?: boolean, fatal?: boolean, map?: Record<string, (exp: any) => boolean>; }[]) {
         const len = mapping.length;
         const result = new Array(len);
+        
+        // Check if we can exit early (only when no queries have `all: true`)
+        const shouldExitEarly = mapping.every(m => !m.all);
+        const shouldExit = () => shouldExitEarly && mapping.every((query, index) => !query.all && index in result);
+        
         for (let i = 0; i < len; i++) {
             const { filter, all = false, map: mappers, ...opts } = mapping[i];
             if (all) {
@@ -1075,7 +1177,29 @@ export const WebpackHolder = {
                 // If mappers provided, use getMangled-style mapping
                 result[i] = mappers && mod ? WebpackHolder._mapMangledObject?.(mod, mappers) ?? mod : mod;
             }
+            
+            // Early exit optimization from BD PR #2007
+            if (shouldExit()) break;
         }
+        
+        // Handle fatal option and map defaults - matches BD PR #2007
+        for (let index = 0; index < mapping.length; index++) {
+            const query = mapping[index];
+            const exists = index in result;
+            
+            if (query.fatal) {
+                if (query.all && (!Array.isArray(result[index]) || result[index].length === 0)) {
+                    throw makeWebpackException();
+                }
+                if (!exists) throw makeWebpackException();
+            }
+            
+            // Initialize empty object for map queries that found nothing
+            if (query.map && !exists) {
+                result[index] = {};
+            }
+        }
+        
         return result;
     },
     /**
@@ -2822,7 +2946,9 @@ class BdApiReImplementationInstance {
             },
             /**
              * Unwraps a React component to get its inner type.
-             * Handles memo, forwardRef, and lazy wrappers using structural checks.
+             * Handles memo, forwardRef, and lazy wrappers using Symbol comparisons.
+             *
+             * This implementation matches BetterDiscord's ReactUtils.getType from PR #2007.
              *
              * Also handles Vencord's own LazyComponent wrapper ($$vencordGetWrappedComponent).
              *
@@ -2872,16 +2998,17 @@ class BdApiReImplementationInstance {
                 return null;
             },
             /**
-             * Wraps a function component in an ErrorBoundary for safe rendering.
+             * Wraps a function component to allow calling it with hooks outside
+             * of React's normal render context.
              *
-             * In Vencord's architecture (single React instance from Discord), we don't need
-             * to patch React's hooks dispatcher. Instead, we wrap components in ErrorBoundary
-             * to gracefully handle any hook-related or render errors.
+             * This implementation matches BetterDiscord's wrapInHooks from PR #2007,
+             * patching React's internal dispatcher to provide safe hook implementations.
              *
              * Automatically unwraps memo/forwardRef/lazy wrappers using getType.
              *
              * @param functionComponent The function component to wrap
-             * @returns A wrapped component with error boundary protection
+             * @param customPatches Optional custom hook implementations to merge
+             * @returns A wrapped component that can safely use hooks
              *
              * @example
              * const InternalComponent = BdApi.Webpack.getModule(...);
@@ -2889,22 +3016,49 @@ class BdApiReImplementationInstance {
              * return <SafeComponent someProp="value" />;
              */
             wrapInHooks<T extends React.FC<any>>(
-                functionComponent: T | { $$typeof: symbol; type?: any; render?: any; }
+                functionComponent: T | { $$typeof: symbol; type?: any; render?: any; },
+                customPatches: Partial<typeof patchedReactHooks> = {}
             ): React.FC<React.ComponentProps<T>> {
                 const FC = getReactComponentType(functionComponent);
                 const R = getGlobalApi().React;
                 
-                // Return a component wrapped in ErrorBoundary for safe rendering
-                // This catches hook errors and render failures without crashing the app
-                return function WrappedComponent(props: React.ComponentProps<T>) {
-                    return R.createElement(
-                        ErrorBoundary,
-                        { 
-                            noop: true, // Silent fail in production, still logs
-                            message: "BD plugin component crashed while rendering"
-                        },
-                        R.createElement(FC, props)
-                    );
+                return function wrappedComponent(props: React.ComponentProps<T>) {
+                    // Access React's internal dispatcher
+                    // This is the same approach BD uses in PR #2007
+                    const reactInternals = (R as any).__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE 
+                        || (R as any).__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED;
+                    
+                    if (!reactInternals?.H) {
+                        // Fallback: if we can't patch, just try to render normally
+                        // wrapped in error boundary for safety
+                        try {
+                            return FC(props);
+                        } catch (e) {
+                            compat_logger.error("[wrapInHooks] Failed to render component:", e);
+                            return null;
+                        }
+                    }
+                    
+                    const reactDispatcher = reactInternals.H;
+                    const originalDispatcher = { ...reactDispatcher };
+                    
+                    // Merge default patches with custom patches
+                    Object.assign(reactDispatcher, patchedReactHooks, customPatches);
+                    
+                    try {
+                        return FC(props);
+                    } catch (error) {
+                        // Suppress specific hook errors that are expected
+                        if (error instanceof Error) {
+                            if (error.message === USE_ERR_MSG || error.message === HOOKS_ERR_MSG) {
+                                return null;
+                            }
+                        }
+                        throw error;
+                    } finally {
+                        // Always restore the original dispatcher
+                        Object.assign(reactDispatcher, originalDispatcher);
+                    }
                 } as React.FC<React.ComponentProps<T>>;
             }
         };
