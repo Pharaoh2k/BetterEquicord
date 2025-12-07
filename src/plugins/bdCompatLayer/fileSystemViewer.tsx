@@ -35,19 +35,7 @@ import { PLUGIN_NAME } from "./constants";
 import { getGlobalApi } from "./fakeBdApi";
 import { addCustomPlugin, convertPlugin } from "./pluginConstructor";
 import { compat_logger, FSUtils, readdirPromise, reloadCompatLayer, reloadPluginsSelectively, ZIPUtils } from "./utils";
-type SettingsPlugin = Plugin & {
-    customSections: ((ID: Record<string, unknown>) => any)[];
-};
-interface FileNode {
-    id: string;
-    name: string;
-    path: string;
-    isDirectory: boolean;
-    size?: number;
-    mtime?: number;
-    children?: FileNode[];
-    expanded?: boolean;
-}
+import SettingsPlugin from "@plugins/_core/settings";
 type ChangeMark = "new" | "updated";
 type PluginMetaValue = number | string | undefined;
 type PluginSnapshot = Record<string, PluginMetaValue>;
@@ -2247,16 +2235,29 @@ function formatMaybeJSON(ext: string, content: string): string {
 }
 /** ---------- Settings Tab injection ---------- */
 export function injectSettingsTabs() {
-    const settingsPlugin = (Vencord.Plugins.plugins.Settings as unknown) as SettingsPlugin;
-    settingsPlugin.customSections.push(ID => ({
+    const { customEntries, customSections } = SettingsPlugin;
+
+    customEntries.push({
+        key: "vencord_bdcompat_vfs",
+        title: TabName,
+        Component: () => <FileSystemTab />,
+        Icon: FolderIcon
+    });
+
+    customSections.push(() => ({
         section: "VencordBDCompatFS",
         label: TabName,
-        element: wrapTab(FileSystemTab, TabName),
-        className: "vc-vfs-tab"
+        element: () => <FileSystemTab />,
+        id: "VencordBDCompatFS"
     }));
 }
+
 export function unInjectSettingsTab() {
-    const settingsPlugin = (Vencord.Plugins.plugins.Settings as unknown) as SettingsPlugin;
-    const idx = settingsPlugin.customSections.findIndex(s => s({}).className === "vc-vfs-tab");
-    if (idx !== -1) settingsPlugin.customSections.splice(idx, 1);
+    const { customEntries, customSections } = SettingsPlugin;
+    
+    const entry = customEntries.findIndex(entry => entry.key === "vencord_bdcompat_vfs");
+    const section = customSections.findIndex(section => section({} as any).id === "VencordBDCompatFS");
+    
+    if (entry !== -1) customEntries.splice(entry, 1);
+    if (section !== -1) customSections.splice(section, 1);
 }
