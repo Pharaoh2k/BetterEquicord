@@ -2782,6 +2782,9 @@ class BdApiReImplementationInstance {
         get Spinner() {
             return components.Spinner;
         },
+        get TextInput() {
+            return Vencord.Webpack.Common.TextInput;
+        },
         SwitchInput(props: { id: string, value: boolean, onChange: (v: boolean) => void; }) {
             return getGlobalApi().UI.buildSettingsPanel({
                 settings: [{
