@@ -2255,27 +2255,22 @@ function formatMaybeJSON(ext: string, content: string): string {
 /** ---------- Settings Tab injection ---------- */
 export function injectSettingsTabs() {
     const settingsPlugin = (Vencord.Plugins.plugins.Settings as unknown) as SettingsPlugin;
-    
     settingsPlugin.customEntries.push({
         key: "vencord_bdcompat_vfs",
         title: TabName,
-        Component: wrapTab(FileSystemTab, TabName),
+        Component: FileSystemTab,
     });
-    
-    settingsPlugin.customSections.push(SectionTypes => ({
+    settingsPlugin.customSections.push(ID => ({
         section: "VencordBDCompatFS",
         label: TabName,
         element: wrapTab(FileSystemTab, TabName),
         className: "vc-vfs-tab"
     }));
 }
-
 export function unInjectSettingsTab() {
     const settingsPlugin = (Vencord.Plugins.plugins.Settings as unknown) as SettingsPlugin;
-    
     const entryIdx = settingsPlugin.customEntries.findIndex(e => e.key === "vencord_bdcompat_vfs");
     if (entryIdx !== -1) settingsPlugin.customEntries.splice(entryIdx, 1);
-    
     const sectionIdx = settingsPlugin.customSections.findIndex(s => s({} as any).className === "vc-vfs-tab");
     if (sectionIdx !== -1) settingsPlugin.customSections.splice(sectionIdx, 1);
 }
