@@ -18,8 +18,6 @@
  *
  * SPDX-License-Identifier: GPL-3.0-only
  */
-
-
 import { classNameFactory } from "@api/Styles";
 import { BaseText } from "@components/BaseText";
 import { Button, TextButton, type ButtonVariant } from "@components/Button";
@@ -39,6 +37,13 @@ import { addCustomPlugin, convertPlugin } from "./pluginConstructor";
 import { compat_logger, FSUtils, readdirPromise, reloadCompatLayer, reloadPluginsSelectively, ZIPUtils } from "./utils";
 type SettingsPlugin = Plugin & {
     customSections: ((ID: Record<string, unknown>) => any)[];
+    customEntries: {
+        key: string;
+        title: string;
+        panelTitle?: string;
+        Component: React.ComponentType<any>;
+        Icon?: React.ComponentType<any>;
+    }[];
 };
 interface FileNode {
     id: string;
