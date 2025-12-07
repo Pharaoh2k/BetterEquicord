@@ -37,13 +37,6 @@ import { addCustomPlugin, convertPlugin } from "./pluginConstructor";
 import { compat_logger, FSUtils, readdirPromise, reloadCompatLayer, reloadPluginsSelectively, ZIPUtils } from "./utils";
 type SettingsPlugin = Plugin & {
     customSections: ((ID: Record<string, unknown>) => any)[];
-    customEntries: {
-        key: string;
-        title: string;
-        panelTitle?: string;
-        Component: React.ComponentType<any>;
-        Icon?: React.ComponentType<any>;
-    }[];
 };
 interface FileNode {
     id: string;
@@ -2255,11 +2248,6 @@ function formatMaybeJSON(ext: string, content: string): string {
 /** ---------- Settings Tab injection ---------- */
 export function injectSettingsTabs() {
     const settingsPlugin = (Vencord.Plugins.plugins.Settings as unknown) as SettingsPlugin;
-    settingsPlugin.customEntries.push({
-        key: "vencord_bdcompat_vfs",
-        title: TabName,
-        Component: FileSystemTab,
-    });
     settingsPlugin.customSections.push(ID => ({
         section: "VencordBDCompatFS",
         label: TabName,
@@ -2269,8 +2257,6 @@ export function injectSettingsTabs() {
 }
 export function unInjectSettingsTab() {
     const settingsPlugin = (Vencord.Plugins.plugins.Settings as unknown) as SettingsPlugin;
-    const entryIdx = settingsPlugin.customEntries.findIndex(e => e.key === "vencord_bdcompat_vfs");
-    if (entryIdx !== -1) settingsPlugin.customEntries.splice(entryIdx, 1);
-    const sectionIdx = settingsPlugin.customSections.findIndex(s => s({} as any).className === "vc-vfs-tab");
-    if (sectionIdx !== -1) settingsPlugin.customSections.splice(sectionIdx, 1);
+    const idx = settingsPlugin.customSections.findIndex(s => s({}).className === "vc-vfs-tab");
+    if (idx !== -1) settingsPlugin.customSections.splice(idx, 1);
 }
