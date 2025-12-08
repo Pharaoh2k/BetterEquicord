@@ -75,7 +75,7 @@ export function RadioSettingComponent(props: {
                                 borderRadius: "4px",
                                 background: checked ? "var(--background-modifier-selected)" : "var(--background-base-lower)",
                                 cursor: disabled ? "not-allowed" : "pointer",
-                                outline: "1px solid var(--background-tertiary)"
+                                outline: "1px solid var(--background-secondary-alt)"
                             }}
                         >
                             <input
