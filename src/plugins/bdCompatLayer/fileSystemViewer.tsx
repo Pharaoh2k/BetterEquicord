@@ -1109,7 +1109,7 @@ function FileSystemTab() {
             .${cl("drop-label")} { padding: 8px 12px; border-radius: 999px; background: var(--bg-base-primary); }
             @keyframes bd-drop-fade { from { opacity: .0; } to { opacity: 1; } }
             .${cl("sort-row")} { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 6px 0 12px; }
-            .${cl("sort-select")} { background: var(--text-tertiary); border: 1px solid var(--background-accent); border-radius: 6px; padding: 2px 8px; }
+            .${cl("sort-select")} { background: var(--text-muted); border: 1px solid var(--background-accent); border-radius: 6px; padding: 2px 8px; }
             /* badges next to changed plugin files */
             .${cl("badge")} { display:inline-block; padding:0.125rem 0.375rem; border-radius:0.25rem; font-size:0.625rem; font-weight:700; text-transform:uppercase; letter-spacing:0.025em; flex-shrink:0; }
             .${cl("badge-new")} { background:var(--green-500); color:var(--white-500); }
