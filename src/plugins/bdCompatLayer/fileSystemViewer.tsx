@@ -1095,7 +1095,7 @@ function FileSystemTab() {
             .${cl("preview-markdown")} { padding: 12px; max-height: 25rem; overflow: auto; }
             .${cl("preview-code")} code.hljs { background: transparent; color: var(--text-default); }
             .${cl("editor-wrap")} { display: flex; flex-direction: column; gap: 8px; }
-            .${cl("editor-textarea")} { width: 100%; min-height: 16rem; resize: vertical; padding: 8px; border-radius: 8px; background: var(--background-tertiary); color: var(--text-default); }
+            .${cl("editor-textarea")} { width: 100%; min-height: 16rem; resize: vertical; padding: 8px; border-radius: 8px; background: var(--background-secondary-alt); color: var(--text-default); }
             .${cl("editor-toolbar")} { display: flex; gap: 8px; align-items: center; }
             .${cl("dirty-dot")} { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--status-danger, #ff6b6b); }
             .${cl("detached-editor-modal")} { width: 80vw; height: 80vh; display: flex; flex-direction: column; }
@@ -1106,7 +1106,7 @@ function FileSystemTab() {
             .${cl("monaco-line-changed")} { width: 3px; background: var(--brand-500, #f5a623); }
             .${cl("dropzone")} { position: relative; }
             .${cl("drop-overlay")} { position: absolute; inset: 0; border: 2px dashed var(--status-positive); display: grid; place-items: center; pointer-events: none; background: rgba(0,0,0,0.25); border-radius: 8px; animation: bd-drop-fade 120ms ease-out; }
-            .${cl("drop-label")} { padding: 8px 12px; border-radius: 999px; background: var(--background-primary); }
+            .${cl("drop-label")} { padding: 8px 12px; border-radius: 999px; background: var(--bg-base-primary); }
             @keyframes bd-drop-fade { from { opacity: .0; } to { opacity: 1; } }
             .${cl("sort-row")} { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 6px 0 12px; }
             .${cl("sort-select")} { background: var(--text-tertiary); border: 1px solid var(--background-accent); border-radius: 6px; padding: 2px 8px; }
@@ -1362,7 +1362,7 @@ function InlineMonacoViewer({
         };
     }, [value, language, readOnly]);
     return (
-        <div style={{ height, border: "1px solid var(--background-modifier-accent)", borderRadius: "0.5rem" }}>
+        <div style={{ height, border: "1px solid var(--background-modifier-selected)", borderRadius: "0.5rem" }}>
             <div ref={hostRef} style={{ width: "100%", height: "100%" }} />
             {!monacoReady && (
                 <div style={{ padding: "20px", textAlign: "center" }}>
@@ -1580,7 +1580,7 @@ function FilePreview({ file, onSaved }: FilePreviewProps) {
                                 padding: "2px 8px",
                                 borderRadius: "4px",
                                 fontSize: "11px",
-                                background: "var(--background-modifier-accent)",
+                                background: "var(--background-modifier-selected)",
                                 color: "var(--text-muted)"
                             }}
                         >
@@ -1867,7 +1867,7 @@ function DetachedMonacoEditor({
                     alignItems: "center",
                     gap: 8,
                     borderBottom: "1px solid var(--background-modifier-hover)",
-                    background: "var(--background-tertiary)"
+                    background: "var(--background-secondary-alt)"
                 }}>
                     <Paragraph size="sm" style={{ marginRight: "auto" }}>
                         You have unsaved changes.
