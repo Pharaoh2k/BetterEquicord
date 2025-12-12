@@ -1,12 +1,12 @@
 /* eslint-disable simple-header/header */
 /**
  * BetterDiscord Context Menu API
- * 
+ *
  * Copyright (c) 2015-present Jiiks - https://github.com/Jiiks
  * Copyright (c) 2015-present JsSucks - https://github.com/JsSucks
  * Copyright (c) 2015-present BetterDiscord - https://github.com/BetterDiscord/BetterDiscord
  * All rights reserved.
- * 
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -18,11 +18,11 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- * 
+ *
  * Source: https://github.com/BetterDiscord/BetterDiscord
  * File: src/betterdiscord/api/contextmenu.ts
  * Commit: 539e2e69baca36d083b3447c271c815e6fe71c4a
- * 
+ *
  * Modifications for Vencord BD Compatibility Layer:
  * Copyright (c) 2025 Pharaoh2k
  * - Converted from TypeScript to JavaScript
@@ -39,9 +39,9 @@ import { addLogger } from "../utils";
  * @returns {ContextMenu} Instantiated ContextMenu API
  */
 export function createContextMenu(Patcher) {
-    const Webpack = window.BdApi.Webpack;
-    const Filters = Webpack.Filters;
-    const React = window.BdApi.React;
+    const { Webpack } = window.BdApi;
+    const { Filters } = Webpack;
+    const { React } = window.BdApi;
     const webpackRequire = Webpack.require;
     const Logger = addLogger("ContextMenu");
 
@@ -65,7 +65,7 @@ export function createContextMenu(Patcher) {
     if (!startupComplete) {
         const REGEX = /(function .{1,3}\(.{1,3}\){return null}){5}/;
         const EXTRACT_REGEX = /\.type===.{1,3}\.(.{1,3})\)return .{1,3}\.push\((?:null!=.{1,3}\.props\..+?)?{type:"(.+?)",/g;
-	const EXTRACT_GROUP_REGEX = /\.type===.{1,3}\.(.{1,3})\){.+{type:"groupstart"/;
+        const EXTRACT_GROUP_REGEX = /\.type===.{1,3}\.(.{1,3})\){.+{type:"groupstart"/;
         const EXTRACT_GROUP_ITEM_REGEX = /\.type===.{1,3}\.(.{1,3})\){.+{type:"(groupstart|customitem)".+\.type===.{1,3}\.(.{1,3})\){.+?{type:"(groupstart|customitem)"/;
 
         let menuItemsId;
@@ -100,7 +100,7 @@ export function createContextMenu(Patcher) {
                     case "checkbox": MenuComponents.CheckboxItem ??= contextMenuComponents[key]; break;
                     case "compositecontrol":
                     case "control": MenuComponents.ControlItem ??= contextMenuComponents[key]; break;
-		    case "customitem":
+                    case "customitem":
                     case "item": MenuComponents.Item ??= contextMenuComponents[key]; break;
                 }
             }
@@ -110,11 +110,11 @@ export function createContextMenu(Patcher) {
                 MenuComponents.Group ??= contextMenuComponents[matchA[1]];
             }
 
-	    const matchB = menuParser.match(EXTRACT_GROUP_ITEM_REGEX);
-	    if (matchB) {
-	        MenuComponents.Group ??= contextMenuComponents[matchB[matchB[2] === "groupstart" ? 1 : 3]];
-	        MenuComponents.Item ??= contextMenuComponents[matchB[matchB[2] === "customitem" ? 1 : 3]];
-	    }
+            const matchB = menuParser.match(EXTRACT_GROUP_ITEM_REGEX);
+            if (matchB) {
+                MenuComponents.Group ??= contextMenuComponents[matchB[matchB[2] === "groupstart" ? 1 : 3]];
+                MenuComponents.Item ??= contextMenuComponents[matchB[matchB[2] === "customitem" ? 1 : 3]];
+            }
 
             MenuComponents.Menu ??= Webpack.getModule(
                 Filters.byStrings("getContainerProps()", ".keyboardModeEnabled&&null!="),
@@ -144,8 +144,8 @@ export function createContextMenu(Patcher) {
             startupComplete = false;
             Logger.stacktrace("ContextMenu~Components", "Fatal startup error:", error);
             Object.assign(out, {
-                closeContextMenu: () => {},
-                openContextMenu: () => {}
+                closeContextMenu: () => { },
+                openContextMenu: () => { }
             });
         }
         return out;
@@ -164,7 +164,7 @@ export function createContextMenu(Patcher) {
 
             const { module, key } = (() => {
                 const foundModule = Webpack.getModule(
-                    m => Object.values(m).some(v => typeof v === "function" && v.toString().includes(`type:"CONTEXT_MENU_CLOSE"`)),
+                    m => Object.values(m).some(v => typeof v === "function" && v.toString().includes("type:\"CONTEXT_MENU_CLOSE\"")),
                     { searchExports: false }
                 );
                 const foundKey = Object.keys(foundModule).find(k => foundModule[k].length === 3);
@@ -205,7 +205,7 @@ export function createContextMenu(Patcher) {
                     }
                     else {
                         const layer = res.props.children ? res.props.children : res;
-                        if (typeof layer?.type == "function") {
+                        if (typeof layer?.type === "function") {
                             MenuPatcher.patchRecursive(layer, "type", depth);
                         }
                     }
@@ -312,7 +312,7 @@ export function createContextMenu(Patcher) {
 
         buildMenu(setup) {
             const self = this;
-            return (props) => {
+            return props => {
                 return React.createElement(MenuComponents.Menu, props, self.buildMenuChildren(setup));
             };
         }
