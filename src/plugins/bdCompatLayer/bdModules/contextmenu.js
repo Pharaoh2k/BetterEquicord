@@ -106,9 +106,9 @@ export function createContextMenu(Patcher) {
             }
 
             const matchA = menuParser.match(EXTRACT_GROUP_REGEX);
-	    if (matchA) {
-	        MenuComponents.Group ??= contextMenuComponents[matchA[1]];
-	    }
+            if (matchA) {
+                MenuComponents.Group ??= contextMenuComponents[matchA[1]];
+            }
 
 	    const matchB = menuParser.match(EXTRACT_GROUP_ITEM_REGEX);
 	    if (matchB) {
