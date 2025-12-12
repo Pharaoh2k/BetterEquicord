@@ -65,6 +65,7 @@ export function createContextMenu(Patcher) {
     if (!startupComplete) {
         const REGEX = /(function .{1,3}\(.{1,3}\){return null}){5}/;
         const EXTRACT_REGEX = /\.type===.{1,3}\.(.{1,3})\)return .{1,3}\.push\((?:null!=.{1,3}\.props\..+?)?{type:"(.+?)",/g;
+	const EXTRACT_GROUP_REGEX = /\.type===.{1,3}\.(.{1,3})\){.+{type:"groupstart"/;
         const EXTRACT_GROUP_ITEM_REGEX = /\.type===.{1,3}\.(.{1,3})\){.+{type:"(groupstart|customitem)".+\.type===.{1,3}\.(.{1,3})\){.+?{type:"(groupstart|customitem)"/;
 
         let menuItemsId;
@@ -99,14 +100,21 @@ export function createContextMenu(Patcher) {
                     case "checkbox": MenuComponents.CheckboxItem ??= contextMenuComponents[key]; break;
                     case "compositecontrol":
                     case "control": MenuComponents.ControlItem ??= contextMenuComponents[key]; break;
+		    case "customitem":
+                    case "item": MenuComponents.Item ??= contextMenuComponents[key]; break;
                 }
             }
 
-            const match = menuParser.match(EXTRACT_GROUP_ITEM_REGEX);
-            if (match) {
-                MenuComponents.Group ??= contextMenuComponents[match[match[2] === "groupstart" ? 1 : 3]];
-                MenuComponents.Item ??= contextMenuComponents[match[match[2] === "customitem" ? 1 : 3]];
-            }
+            const matchA = menuParser.match(EXTRACT_GROUP_REGEX);
+	    if (matchA) {
+	        MenuComponents.Group ??= contextMenuComponents[matchA[1]];
+	    }
+
+	    const matchB = menuParser.match(EXTRACT_GROUP_ITEM_REGEX);
+	    if (matchB) {
+	        MenuComponents.Group ??= contextMenuComponents[matchB[matchB[2] === "groupstart" ? 1 : 3]];
+	        MenuComponents.Item ??= contextMenuComponents[matchB[matchB[2] === "customitem" ? 1 : 3]];
+	    }
 
             MenuComponents.Menu ??= Webpack.getModule(
                 Filters.byStrings("getContainerProps()", ".keyboardModeEnabled&&null!="),
