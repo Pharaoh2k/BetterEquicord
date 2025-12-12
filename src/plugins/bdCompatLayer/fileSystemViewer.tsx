@@ -20,13 +20,14 @@
  */
 import { classNameFactory } from "@api/Styles";
 import { BaseText } from "@components/BaseText";
-import { Button, TextButton, type ButtonVariant } from "@components/Button";
+import { Button, type ButtonVariant, TextButton } from "@components/Button";
 import { Card } from "@components/Card";
 import { FolderIcon, RestartIcon } from "@components/Icons";
 import { Paragraph } from "@components/Paragraph";
-import { Span } from "@components/Span";
 import { QuickAction, QuickActionCard } from "@components/settings/QuickAction";
-import { SettingsTab, wrapTab } from "@components/settings/tabs";
+import { SettingsTab } from "@components/settings/tabs";
+import { Span } from "@components/Span";
+import SettingsPlugin from "@plugins/_core/settings";
 import { ModalRoot, ModalSize, openModal } from "@utils/modal";
 import { Plugin } from "@utils/types";
 import { hljs, Parser, React, ScrollerThin, TabBar, TextInput, Tooltip, useEffect, useMemo, useReducer, useRef, useState } from "@webpack/common"; // using Paragraph in Equicord, instead of Forms
@@ -35,7 +36,17 @@ import { PLUGIN_NAME } from "./constants";
 import { getGlobalApi } from "./fakeBdApi";
 import { addCustomPlugin, convertPlugin } from "./pluginConstructor";
 import { compat_logger, FSUtils, readdirPromise, reloadCompatLayer, reloadPluginsSelectively, ZIPUtils } from "./utils";
-import SettingsPlugin from "@plugins/_core/settings";
+
+interface FileNode {
+    id: string;
+    name: string;
+    path: string;
+    isDirectory: boolean;
+    size?: number;
+    mtime?: Date | number;
+    children?: FileNode[];
+    expanded?: boolean;
+}
 type ChangeMark = "new" | "updated";
 type PluginMetaValue = number | string | undefined;
 type PluginSnapshot = Record<string, PluginMetaValue>;
@@ -673,7 +684,7 @@ function FileSystemTab() {
         const queue: QueueItem[] = roots.map(r => ({ node: r, depth: 0 }));
         let loadedCount = 0;
         while (queue.length && loadedCount < maxNodes) {
-            if (seq !== searchSeq.current) return null;  // Changed from 'roots' to 'null'
+            if (seq !== searchSeq.current) return null; // Changed from 'roots' to 'null'
             const { node, depth } = queue.shift()!;
             if (!node.isDirectory || depth >= maxDepth) continue;
             if (node.children == null) {
@@ -834,7 +845,7 @@ function FileSystemTab() {
         }
     };
     return (
-        <SettingsTab title={TabName}>
+        <SettingsTab>
             <Paragraph title="File System Actions">
                 <QuickActionCard>
                     <QuickAction text="Export Filesystem as ZIP" action={() => ZIPUtils.downloadZip()} Icon={FolderIcon} />
@@ -2254,10 +2265,10 @@ export function injectSettingsTabs() {
 
 export function unInjectSettingsTab() {
     const { customEntries, customSections } = SettingsPlugin;
-    
+
     const entry = customEntries.findIndex(entry => entry.key === "vencord_bdcompat_vfs");
     const section = customSections.findIndex(section => section({} as any).id === "VencordBDCompatFS");
-    
+
     if (entry !== -1) customEntries.splice(entry, 1);
     if (section !== -1) customSections.splice(section, 1);
 }
