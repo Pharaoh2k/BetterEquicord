@@ -11,9 +11,9 @@ permissions:
 
 jobs:
   sync:
-    runs-on: ubuntu-latest
+    runs-on:  ubuntu-latest
 
-    steps:
+    steps: 
       - name: Checkout fork
         uses: actions/checkout@v4
         with:
@@ -23,21 +23,22 @@ jobs:
       - name: Configure Git author
         run: |
           git config user.name  "upstream-sync-bot"
-          git config user.email "upstream-sync-bot@users.noreply.github.com"
+          git config user.email "upstream-sync-bot@users.noreply. github.com"
 
       - name: Add & fetch upstream
         run: |
-          git remote add upstream https://github.com/Equicord/Equicord.git || true
+          git remote add upstream https://github.com/Equicord/Equicord. git || true
           git fetch upstream --prune
 
-      - name: Merge upstream/main into my main (like the UI "Sync fork" button)
+      - name:  Merge upstream/main into my main (like the UI "Sync fork" button)
         run: |
           git checkout main
           # Try fast-forward; if not, create a merge commit.
-          git merge --ff-only upstream/main || git merge --no-edit upstream/main
+          # Use -X ours strategy to keep our changes on conflicts
+          git merge --ff-only upstream/main || git merge --no-edit -X ours upstream/main
 
       - name: Push back to my fork using the PAT
-        env:
+        env: 
           PAT: ${{ secrets.UPSTREAM_SYNC_PAT }}
         run: |
           # Use USERNAME:PAT@... for HTTPS pushes (PAT acts as the password)
