@@ -27,7 +27,7 @@ jobs:
 
       - name: Add & fetch upstream
         run: |
-          git remote add upstream https://github.com/Equicord/Equicord. git || true
+          git remote add upstream https://github.com/Equicord/Equicord.git || true
           git fetch upstream --prune
 
       - name:  Merge upstream/main into my main (like the UI "Sync fork" button)
