@@ -22,7 +22,7 @@ jobs:
 
       - name: Configure Git author
         run: |
-          git config user. name  "upstream-sync-bot"
+          git config user.name  "upstream-sync-bot"
           git config user.email "upstream-sync-bot@users.noreply. github.com"
 
       - name: Add & fetch upstream
