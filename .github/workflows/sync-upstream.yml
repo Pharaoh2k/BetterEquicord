@@ -1,9 +1,9 @@
 name: Sync fork from upstream (merge, keep my files)
 
 on:
-  schedule:
+  schedule: 
     - cron: "5 0 * * *"   # runs daily at 00:05 UTC
-  workflow_dispatch:
+  workflow_dispatch: 
 
 # We'll push with your PAT, so the default GITHUB_TOKEN can stay read-only.
 permissions:
@@ -15,14 +15,14 @@ jobs:
 
     steps: 
       - name: Checkout fork
-        uses: actions/checkout@v4
+        uses:  actions/checkout@v4
         with:
-          fetch-depth: 0
-          persist-credentials: false  # don't use GITHUB_TOKEN for pushes
+          fetch-depth:  0
+          persist-credentials:  false  # don't use GITHUB_TOKEN for pushes
 
       - name: Configure Git author
         run: |
-          git config user.name  "upstream-sync-bot"
+          git config user. name  "upstream-sync-bot"
           git config user.email "upstream-sync-bot@users.noreply. github.com"
 
       - name: Add & fetch upstream
@@ -35,7 +35,13 @@ jobs:
           git checkout main
           # Try fast-forward; if not, create a merge commit.
           # Use -X ours strategy to keep our changes on conflicts
-          git merge --ff-only upstream/main || git merge --no-edit -X ours upstream/main
+          if !  git merge --ff-only upstream/main; then
+            if ! git merge --no-edit -X ours upstream/main; then
+              # Handle DU conflicts:  deleted by us, modified by them - keep deleted
+              git status --porcelain | grep '^DU' | awk '{print $2}' | xargs -r git rm
+              git commit --no-edit
+            fi
+          fi
 
       - name: Push back to my fork using the PAT
         env: 
