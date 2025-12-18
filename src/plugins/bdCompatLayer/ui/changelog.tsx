@@ -54,7 +54,7 @@ function ensureStyles() {
 .bd-cl-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:999998;opacity:0;animation:bd-cl-fade-in .12s ease forwards}
 @keyframes bd-cl-fade-in{to{opacity:1}}
 .bd-cl-modal{position:fixed;inset:0;z-index:999999;display:grid;place-items:center;pointer-events:none}
-.bd-cl-card{pointer-events:auto;width:min(720px,calc(100vw - 24px));max-height:calc(100vh - 24px);background:white;color:var(--modal-background);border-radius:8px;overflow:hidden;box-shadow:0 16px 40px rgba(0,0,0,.4),0 4px 12px rgba(0,0,0,.2);transform:translateY(8px) scale(.985);opacity:0;animation:bd-cl-pop .15s ease forwards}
+.bd-cl-card{pointer-events:auto;width:min(720px,calc(100vw - 24px));max-height:calc(100vh - 24px);background:var(--modal-background);color:white;border-radius:8px;overflow:hidden;box-shadow:0 16px 40px rgba(0,0,0,.4),0 4px 12px rgba(0,0,0,.2);transform:translateY(8px) scale(.985);opacity:0;animation:bd-cl-pop .15s ease forwards}
 @keyframes bd-cl-pop{to{transform:translateY(0) scale(1);opacity:1}}
 .bd-cl-banner{width:100%;background:#000;aspect-ratio:16/6;display:block;overflow:hidden}
 .bd-cl-banner img,.bd-cl-banner video,.bd-cl-banner iframe{display:block;width:100%;height:100%;object-fit:cover;border:0}
