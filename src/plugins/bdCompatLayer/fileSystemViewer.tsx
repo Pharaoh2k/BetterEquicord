@@ -58,7 +58,7 @@ function detectFsBackend(): { name: string; color: string; kind: "RealFS" | "Ind
         const flags = (Vencord as any)?.Settings?.plugins?.[PLUGIN_NAME];
         if (!flags) return { name: "Filesystem", color: "var(--status-positive)", kind: "Filesystem" };
         if (flags.useRealFsInstead) return { name: "RealFS", color: "var(--status-warning)", kind: "RealFS" };
-        if (flags.useIndexedDBInstead) return { name: "IndexedDB", color: "var(--info-positive-foreground)", kind: "IndexedDB" };
+        if (flags.useIndexedDBInstead) return { name: "IndexedDB", color: "var(--text-feedback-positive)", kind: "IndexedDB" };
         return { name: "localStorage", color: "var(--status-positive)", kind: "localStorage" };
     } catch {
         return { name: "Unknown", color: "var(--status-danger)", kind: "Unknown" };
@@ -1081,9 +1081,9 @@ function FileSystemTab() {
             .${cl("storage-fill")} { height: 100%; border-radius: 0.25rem; transition: width 0.3s ease; }
             .${cl("tree-container")} { flex: 1; background: var(--background-base-lower); border-radius: 0.5rem; padding: 8px; min-height: 0; overflow-y: auto; overflow-x: hidden; max-height: calc(60vh - 120px); }
             .${cl("tree-node")} { display: flex; align-items: center; gap: 0.5rem; padding: 0.25rem 0.5rem; border-radius: 0.25rem; cursor: pointer; transition: background 0.15s ease; user-select: none; }
-            .${cl("tree-node")}:hover { background: var(--background-modifier-hover); }
-            .${cl("tree-node")}.${cl("selected")} { background: var(--background-modifier-selected); }
-            .${cl("tree-chevron")} { width: 1rem; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; color: var(--interactive-normal); transition: transform 0.15s ease; border: none; padding: 0; margin: 0; background: transparent; cursor: pointer; }
+            .${cl("tree-node")}:hover { background: var(--background-mod-subtle); }
+            .${cl("tree-node")}.${cl("selected")} { background: var(--background-mod-strong); }
+            .${cl("tree-chevron")} { width: 1rem; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; color: var(--interactive-text-default); transition: transform 0.15s ease; border: none; padding: 0; margin: 0; background: transparent; cursor: pointer; }
             .${cl("tree-chevron")}.${cl("expanded")} { transform: rotate(90deg); }
             .${cl("tree-chevron")}.${cl("invisible")} { visibility: hidden; }
             .${cl("tree-icon")} { flex-shrink: 0; }
@@ -1091,33 +1091,33 @@ function FileSystemTab() {
             .${cl("tree-size")} { color: var(--text-muted); font-size: 0.75rem; flex-shrink: 0; }
             .${cl("tree-children")} { margin-left: 1.5rem; }
             .${cl("details-panel")} { padding: 16px; display: flex; flex-direction: column; gap: 16px; }
-            .${cl("details-header")} { padding-bottom: 8px; border-bottom: 1px solid var(--background-modifier-hover); overflow: hidden; }
+            .${cl("details-header")} { padding-bottom: 8px; border-bottom: 1px solid var(--background-mod-subtle); overflow: hidden; }
             .${cl("details-filename")} { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
             .${cl("tab-content")} { flex: 1; overflow: auto; min-height: 0; }
             .${cl("preview-code")} { background: var(--background-surface-highest); padding: 12px; border-radius: 0.5rem; font-family: "Consolas","Monaco",monospace; font-size: 0.8125rem; line-height: 1.5; overflow: auto; max-height: 32rem; color: var(--text-default); }
             .${cl("preview-image")} { text-align: center; }
             .${cl("preview-image")} img { max-width: 100%; max-height: 20rem; border-radius: 0.5rem; box-shadow: 0 0.125rem 0.5rem rgba(0,0,0,0.2); }
-            .${cl("actions")} { display: flex; gap: 8px; flex-wrap: wrap; padding-top: 16px; border-top: 1px solid var(--background-modifier-hover); }
+            .${cl("actions")} { display: flex; gap: 8px; flex-wrap: wrap; padding-top: 16px; border-top: 1px solid var(--background-mod-subtle); }
             .${cl("property-row")} { display: flex; flex-direction: column; gap: 0.25rem; margin-bottom: 12px; }
             .${cl("property-label")} { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; color: var(--text-muted); }
             .${cl("property-value")} { font-size: 0.875rem; color: var(--text-default); word-break: break-all; }
             .${cl("clear-btn")} { color: var(--status-danger); border-radius: 0.375rem; }
-            .${cl("clear-btn")}:hover { background: var(--background-modifier-hover); color: var(--status-danger); }
+            .${cl("clear-btn")}:hover { background: var(--background-mod-subtle); color: var(--status-danger); }
             .${cl("preview-markdown")} { padding: 12px; max-height: 25rem; overflow: auto; }
             .${cl("preview-code")} code.hljs { background: transparent; color: var(--text-default); }
             .${cl("editor-wrap")} { display: flex; flex-direction: column; gap: 8px; }
-            .${cl("editor-textarea")} { width: 100%; min-height: 16rem; resize: vertical; padding: 8px; border-radius: 8px; background: var(--background-secondary-alt); color: var(--text-default); }
+            .${cl("editor-textarea")} { width: 100%; min-height: 16rem; resize: vertical; padding: 8px; border-radius: 8px; background: var(--background-mobile-secondary-alt); color: var(--text-default); }
             .${cl("editor-toolbar")} { display: flex; gap: 8px; align-items: center; }
             .${cl("dirty-dot")} { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--status-danger, #ff6b6b); }
             .${cl("detached-editor-modal")} { width: 80vw; height: 80vh; display: flex; flex-direction: column; }
-            .${cl("detached-editor-toolbar")} { padding: 8px 12px; display: flex; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 1px solid var(--background-modifier-hover); }
+            .${cl("detached-editor-toolbar")} { padding: 8px 12px; display: flex; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 1px solid var(--background-mod-subtle); }
             .${cl("detached-editor-title")} { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60%; }
             .${cl("detached-editor-body")} { flex: 1 1 auto; min-height: 0; }
             .${cl("detached-editor-body")} .monaco-editor, .${cl("detached-editor-body")} .monaco-editor .overflow-guard { width: 100% !important; height: 100% !important; }
             .${cl("monaco-line-changed")} { width: 3px; background: var(--brand-500, #f5a623); }
             .${cl("dropzone")} { position: relative; }
             .${cl("drop-overlay")} { position: absolute; inset: 0; border: 2px dashed var(--status-positive); display: grid; place-items: center; pointer-events: none; background: rgba(0,0,0,0.25); border-radius: 8px; animation: bd-drop-fade 120ms ease-out; }
-            .${cl("drop-label")} { padding: 8px 12px; border-radius: 999px; background: var(--bg-base-primary); }
+            .${cl("drop-label")} { padding: 8px 12px; border-radius: 999px; background: var(--mobile-text-heading-primary); }
             @keyframes bd-drop-fade { from { opacity: .0; } to { opacity: 1; } }
             .${cl("sort-row")} { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 6px 0 12px; }
             .${cl("sort-select")} { background: var(--text-muted); border: 1px solid var(--background-accent); border-radius: 6px; padding: 2px 8px; }
@@ -1125,7 +1125,7 @@ function FileSystemTab() {
             .${cl("badge")} { display:inline-block; padding:0.125rem 0.375rem; border-radius:0.25rem; font-size:0.625rem; font-weight:700; text-transform:uppercase; letter-spacing:0.025em; flex-shrink:0; }
             .${cl("badge-new")} { background:var(--green-500); color:var(--white-500); }
             .${cl("badge-upd")} { background:var(--brand-500); color:var(--white-500); }
-            .${cl("tree-node")}.${cl("selected-multi")} { background:var(--background-modifier-selected); outline:1px solid color-mix(in srgb, var(--brand-500) 40%, transparent); }
+            .${cl("tree-node")}.${cl("selected-multi")} { background:var(--background-mod-strong); outline:1px solid color-mix(in srgb, var(--brand-500) 40%, transparent); }
             `}</style>
         </SettingsTab>
     );
@@ -1263,7 +1263,7 @@ function FileTreeNode({
                 aria-selected={selected}
                 aria-expanded={node.isDirectory ? expanded : undefined}
                 tabIndex={selected ? 0 : -1}
-                style={{ paddingLeft: `calc(${depth * 1.5}rem + var(--spacing-8))` }}
+                style={{ paddingLeft: `calc(${depth * 1.5}rem + var(--space-8))` }}
             >
                 {selectionMode && (
                     <input
@@ -1373,7 +1373,7 @@ function InlineMonacoViewer({
         };
     }, [value, language, readOnly]);
     return (
-        <div style={{ height, border: "1px solid var(--background-modifier-selected)", borderRadius: "0.5rem" }}>
+        <div style={{ height, border: "1px solid var(--background-mod-strong)", borderRadius: "0.5rem" }}>
             <div ref={hostRef} style={{ width: "100%", height: "100%" }} />
             {!monacoReady && (
                 <div style={{ padding: "20px", textAlign: "center" }}>
@@ -1591,7 +1591,7 @@ function FilePreview({ file, onSaved }: FilePreviewProps) {
                                 padding: "2px 8px",
                                 borderRadius: "4px",
                                 fontSize: "11px",
-                                background: "var(--background-modifier-selected)",
+                                background: "var(--background-mod-strong)",
                                 color: "var(--text-muted)"
                             }}
                         >
@@ -1603,8 +1603,8 @@ function FilePreview({ file, onSaved }: FilePreviewProps) {
                                     padding: "2px 8px",
                                     borderRadius: "4px",
                                     fontSize: "11px",
-                                    background: "var(--info-positive-background)",
-                                    color: "var(--info-positive-foreground)"
+                                    background: "var(--background-feedback-positive)",
+                                    color: "var(--text-feedback-positive)"
                                 }}
                             >
                                 Monaco Editor (optimized for large files)
@@ -1877,8 +1877,8 @@ function DetachedMonacoEditor({
                     display: "flex",
                     alignItems: "center",
                     gap: 8,
-                    borderBottom: "1px solid var(--background-modifier-hover)",
-                    background: "var(--background-secondary-alt)"
+                    borderBottom: "1px solid var(--background-mod-subtle)",
+                    background: "var(--background-mobile-secondary-alt)"
                 }}>
                     <Paragraph size="sm" style={{ marginRight: "auto" }}>
                         You have unsaved changes.
