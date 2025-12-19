@@ -79,7 +79,7 @@ function TreeNode({ node, selectedNode, selectNode, onContextMenu, depth }) {
                     paddingLeft: `${depth * 1.5}rem`,
                     padding: "0.25rem 0.5rem",
                     cursor: "pointer",
-                    background: isSelected ? "var(--background-modifier-selected)" : undefined,
+                    background: isSelected ? "var(--background-mod-strong)" : undefined,
                     borderRadius: "0.25rem"
                 }}
             >
