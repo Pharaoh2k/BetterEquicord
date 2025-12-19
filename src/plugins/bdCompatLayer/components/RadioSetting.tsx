@@ -73,7 +73,7 @@ export function RadioSettingComponent(props: {
                                 gap: "12px",
                                 padding: "8px 12px",
                                 borderRadius: "4px",
-                                background: checked ? "var(--background-modifier-selected)" : "var(--background-base-lower)",
+                                background: checked ? "var(--background-mod-strong)" : "var(--background-base-lower)",
                                 cursor: disabled ? "not-allowed" : "pointer",
                                 outline: "1px solid var(--background-secondary-alt)"
                             }}
@@ -101,7 +101,7 @@ export function RadioSettingComponent(props: {
                                     height: "16px",
                                     borderRadius: "9999px",
                                     boxSizing: "border-box",
-                                    border: `2px solid ${checked ? "var(--brand-500)" : "var(--interactive-normal)"}`,
+                                    border: `2px solid ${checked ? "var(--brand-500)" : "var(--interactive-text-default)"}`,
                                     background: checked ? "var(--brand-500)" : "transparent",
                                     flex: "0 0 auto"
                                 }}
