@@ -284,7 +284,7 @@ export function KeybindSettingComponent(props: {
                     outline: recording
                         ? "2px solid var(--status-danger, hsl(359,83%,59%))"
                         : "1px solid var(--border-strong, hsla(0,0%,100%,.3))",
-                    background: "var(--background-secondary, hsla(0,0%,0%,.1))",
+                    background: "var(--background-mobile-secondary, hsla(0,0%,0%,.1))",
                     userSelect: "none",
                     color: "inherit"
                 }}
