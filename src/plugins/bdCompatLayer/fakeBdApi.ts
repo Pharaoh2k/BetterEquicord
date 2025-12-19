@@ -28,7 +28,7 @@
  *
  * SPDX-License-Identifier: GPL-3.0-only
  */
-//TLH   
+//TLH
 import { showNotification as VencordShowNotification } from "@api/Notifications";
 import { Settings } from "@api/Settings";
 const VenComponents = OptionComponentMap;
@@ -201,7 +201,7 @@ function getReactComponentType(component: any): any {
     // Loop using explicit Symbol comparisons (matches BD's getType implementation)
     while (true) {
         const typeOf = inner?.$$typeof;
-        
+
         if (typeOf === exoticComponents.memo) {
             // React.memo wraps with .type
             inner = inner.type;
@@ -958,16 +958,16 @@ export const WebpackHolder = {
     },
     getLazy(filter, options: any = {}) {
         const { signal: abortSignal, defaultExport = true, searchExports = false, raw = false, fatal = false } = options;
-        
+
         // Early abort check - matches BD's implementation from PR #2007
         if (abortSignal?.aborted) {
             if (fatal) return Promise.reject(makeWebpackException());
             return Promise.resolve(undefined);
         }
-        
+
         const fromCache = this.getModule(filter, { defaultExport, searchExports });
         if (fromCache) return Promise.resolve(fromCache);
-        
+
         return new Promise((resolve, reject) => {
             const cancel = () => {
                 if (fatal) {
@@ -1162,11 +1162,11 @@ export const WebpackHolder = {
     getBulk(...mapping: { filter: (m: any) => unknown, searchExports?: boolean, defaultExport?: boolean, searchDefault?: boolean, raw?: boolean, all?: boolean, fatal?: boolean, map?: Record<string, (exp: any) => boolean>; }[]) {
         const len = mapping.length;
         const result = new Array(len);
-        
+
         // Check if we can exit early (only when no queries have `all: true`)
         const shouldExitEarly = mapping.every(m => !m.all);
         const shouldExit = () => shouldExitEarly && mapping.every((query, index) => !query.all && index in result);
-        
+
         for (let i = 0; i < len; i++) {
             const { filter, all = false, map: mappers, ...opts } = mapping[i];
             if (all) {
@@ -1177,29 +1177,29 @@ export const WebpackHolder = {
                 // If mappers provided, use getMangled-style mapping
                 result[i] = mappers && mod ? WebpackHolder._mapMangledObject?.(mod, mappers) ?? mod : mod;
             }
-            
+
             // Early exit optimization from BD PR #2007
             if (shouldExit()) break;
         }
-        
+
         // Handle fatal option and map defaults - matches BD PR #2007
         for (let index = 0; index < mapping.length; index++) {
             const query = mapping[index];
             const exists = index in result;
-            
+
             if (query.fatal) {
                 if (query.all && (!Array.isArray(result[index]) || result[index].length === 0)) {
                     throw makeWebpackException();
                 }
                 if (!exists) throw makeWebpackException();
             }
-            
+
             // Initialize empty object for map queries that found nothing
             if (query.map && !exists) {
                 result[index] = {};
             }
         }
-        
+
         return result;
     },
     /**
@@ -1646,12 +1646,12 @@ function BD_CM_ensureStyles() {
  transform:translateY(8px) scale(.985);opacity:0;animation:bd-cm-pop .15s ease forwards;display:flex;flex-direction:column;font-family:var(--font-primary,inherit)}
 @keyframes bd-cm-pop{to{transform:translateY(0) scale(1);opacity:1}}
 .bd-cm-header{padding:16px}
-.bd-cm-title{margin:0;font-size:20px;line-height:24px;font-weight:700;color:var(--header-primary,var(--text-default))}
+.bd-cm-title{margin:0;font-size:20px;line-height:24px;font-weight:700;color:var(--mobile-text-heading-primary,var(--text-default))}
 .bd-cm-body{padding:12px 16px 0 16px;overflow:auto;max-height:calc(100vh - 220px);font-size:16px;line-height:20px;color:var(--text-default)}
 .bd-cm-footer{padding:12px 16px 16px;background:var(--modal-footer-background,transparent);border-top:1px solid var(--border-normal);display:flex;gap:8px;justify-content:flex-end}
 .bd-cm-btn{appearance:none;border:0;border-radius:6px;padding:8px 12px;font-weight:600;cursor:pointer;transition:filter .12s ease,transform .12s ease,opacity .12s ease,background-color .12s ease,color .12s ease;font-family:var(--font-primary,inherit)}
-.bd-cm-btn.secondary{background:transparent;color:var(--interactive-normal);border:1px solid var(--border-normal)}
-.bd-cm-btn.secondary:hover{color:var(--interactive-hover)}
+.bd-cm-btn.secondary{background:transparent;color:var(--interactive-text-default);border:1px solid var(--border-normal)}
+.bd-cm-btn.secondary:hover{color:var(--interactive-text-hover)}
 .bd-cm-btn.primary{background:var(--brand-500);color:var(--white-500,#fff)}
 .bd-cm-btn.primary:hover{filter:brightness(1.05)}
 .bd-cm-btn.primary:active{transform:translateY(1px)}
@@ -2010,9 +2010,9 @@ function BD_NOTIF_ensureStyles() {
 .bd-notif-header{display:flex;align-items:center;gap:10px;padding:12px 12px 8px 12px}
 .bd-notif-icon{flex-shrink:0;display:flex;align-items:center;justify-content:center}
 .bd-notif-icon svg{width:18px;height:18px}
-.bd-notif-title{flex:1;font-size:14px;font-weight:600;color:var(--header-primary,#fff);margin:0;line-height:1.3}
-.bd-notif-close{background:transparent;border:none;color:var(--interactive-normal);cursor:pointer;padding:4px;border-radius:4px;display:flex;align-items:center;justify-content:center;transition:background .1s,color .1s}
-.bd-notif-close:hover{background:var(--background-modifier-hover);color:var(--interactive-hover)}
+.bd-notif-title{flex:1;font-size:14px;font-weight:600;color:var(--mobile-text-heading-primary,#fff);margin:0;line-height:1.3}
+.bd-notif-close{background:transparent;border:none;color:var(--interactive-text-default);cursor:pointer;padding:4px;border-radius:4px;display:flex;align-items:center;justify-content:center;transition:background .1s,color .1s}
+.bd-notif-close:hover{background:var(--background-mod-subtle);color:var(--interactive-text-hover)}
 
 /* Body */
 .bd-notif-body{padding:0 12px 12px 12px;font-size:14px;line-height:1.4;color:var(--text-default)}
@@ -2024,8 +2024,8 @@ function BD_NOTIF_ensureStyles() {
 .bd-notif-action{appearance:none;border:none;border-radius:4px;padding:6px 12px;font-size:13px;font-weight:500;cursor:pointer;transition:filter .1s,background .1s}
 .bd-notif-action.bd-notif-btn-primary{background:var(--brand-500);color:#fff}
 .bd-notif-action.bd-notif-btn-primary:hover{filter:brightness(1.1)}
-.bd-notif-action.bd-notif-btn-secondary{background:var(--background-secondary);color:var(--text-default)}
-.bd-notif-action.bd-notif-btn-secondary:hover{background:var(--background-secondary-alt)}
+.bd-notif-action.bd-notif-btn-secondary{background:var(--background-mobile-secondary);color:var(--text-default)}
+.bd-notif-action.bd-notif-btn-secondary:hover{background:var(--background-mobile-secondary-alt)}
 .bd-notif-action.bd-notif-btn-danger{background:var(--status-danger);color:#fff}
 .bd-notif-action.bd-notif-btn-danger:hover{filter:brightness(1.1)}
 .bd-notif-action.bd-notif-btn-success{background:var(--status-positive);color:#fff}
@@ -3024,13 +3024,13 @@ class BdApiReImplementationInstance {
             ): React.FC<React.ComponentProps<T>> {
                 const FC = getReactComponentType(functionComponent);
                 const R = getGlobalApi().React;
-                
+
                 return function wrappedComponent(props: React.ComponentProps<T>) {
                     // Access React's internal dispatcher
                     // This is the same approach BD uses in PR #2007
-                    const reactInternals = (R as any).__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE 
+                    const reactInternals = (R as any).__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE
                         || (R as any).__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED;
-                    
+
                     if (!reactInternals?.H) {
                         // Fallback: if we can't patch, just try to render normally
                         // wrapped in error boundary for safety
@@ -3041,13 +3041,13 @@ class BdApiReImplementationInstance {
                             return null;
                         }
                     }
-                    
+
                     const reactDispatcher = reactInternals.H;
                     const originalDispatcher = { ...reactDispatcher };
-                    
+
                     // Merge default patches with custom patches
                     Object.assign(reactDispatcher, patchedReactHooks, customPatches);
-                    
+
                     try {
                         return FC(props);
                     } catch (error) {
