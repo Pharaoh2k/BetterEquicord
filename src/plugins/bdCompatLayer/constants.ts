@@ -9,7 +9,7 @@
  * Copyright (c) 2022 Vendicated and contributors
  *
  * BD Compatibility Layer plugin
- * Copyright (c) 2023-2025 Davvy and WhoIsThis
+ * Copyright (c) 2023-2025 Davilarek and WhoIsThis
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
