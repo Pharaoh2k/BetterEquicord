@@ -18,7 +18,6 @@
  *
  * SPDX-License-Identifier: GPL-3.0-only
  */
-import { classNameFactory } from "@api/Styles";
 import { BaseText } from "@components/BaseText";
 import { Button, type ButtonVariant, TextButton } from "@components/Button";
 import { Card } from "@components/Card";
@@ -28,6 +27,7 @@ import { QuickAction, QuickActionCard } from "@components/settings/QuickAction";
 import { SettingsTab } from "@components/settings/tabs";
 import { Span } from "@components/Span";
 import SettingsPlugin from "@plugins/_core/settings";
+import { classNameFactory } from "@utils/css";
 import { ModalRoot, ModalSize, openModal } from "@utils/modal";
 import { Plugin } from "@utils/types";
 import { hljs, Parser, React, ScrollerThin, TabBar, TextInput, Tooltip, useEffect, useMemo, useReducer, useRef, useState } from "@webpack/common"; // using Paragraph in Equicord, instead of Forms
@@ -330,6 +330,14 @@ function formatBytes(bytes?: number): string {
     const sizes = ["B", "KB", "MB", "GB", "TB"];
     const i = Math.min(sizes.length - 1, Math.max(0, Math.floor(Math.log(Math.max(1, bytes)) / Math.log(k))));
     return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
+}
+function getStorageBarColor(percent: number): string {
+    if (percent > 90) return "var(--status-danger)";
+    if (percent > 75) return "var(--status-warning)";
+    return "var(--status-positive)";
+}
+function getFolderIcon(expanded: boolean): string {
+    return expanded ? "📂" : "📁";
 }
 async function reloadPlugin(path: string) {
     const p = pathLib();
@@ -844,6 +852,43 @@ function FileSystemTab() {
                 break;
         }
     };
+    const renderTreeContent = () => {
+        if (filteredTree.length > 0) {
+            return (
+                <FileTree
+                    nodes={filteredTree}
+                    searchQuery={debouncedSearch}
+                    selectedFile={selectedFile}
+                    onSelectFile={setSelectedFile}
+                    onLoadChildren={fetchDirContent}
+                    onChildrenLoaded={handleChildrenLoaded}
+                    onToggleExpand={handleToggleExpand}
+                    recentMarks={recentMarks}
+                    selectionMode={selectionMode}
+                    selectedFiles={selectedFiles}
+                    onToggleSelection={toggleFileSelection}
+                />
+            );
+        }
+        if (searchQuery) {
+            return (
+                <div style={{ padding: "20px", textAlign: "center" }}>
+                    <Paragraph size="sm">
+                        No results found for "{searchQuery}"
+                    </Paragraph>
+                    <br />
+                    <Paragraph size="xs">
+                        Try searching by path, e.g. "plugins/"
+                    </Paragraph>
+                </div>
+            );
+        }
+        return (
+            <Paragraph size="sm" style={{ padding: "20px", textAlign: "center" }}>
+                Loading file system.
+            </Paragraph>
+        );
+    };
     return (
         <SettingsTab>
             <Paragraph title="File System Actions">
@@ -957,12 +1002,7 @@ function FileSystemTab() {
                                     className={cl("storage-fill")}
                                     style={{
                                         width: `${storagePercent}%`,
-                                        background:
-                                            storagePercent > 90
-                                                ? "var(--status-danger)"
-                                                : storagePercent > 75
-                                                    ? "var(--status-warning)"
-                                                    : "var(--status-positive)"
+                                        background: getStorageBarColor(storagePercent)
                                     }}
                                 />
                             </div>
@@ -982,35 +1022,7 @@ function FileSystemTab() {
                             aria-label="Import BD plugins by dropping .plugin.js files"
                         >
                             <ScrollerThin className={cl("tree-container")}>
-                                {filteredTree.length > 0 ? (
-                                    <FileTree
-                                        nodes={filteredTree}
-                                        searchQuery={debouncedSearch}
-                                        selectedFile={selectedFile}
-                                        onSelectFile={setSelectedFile}
-                                        onLoadChildren={fetchDirContent}
-                                        onChildrenLoaded={handleChildrenLoaded}
-                                        onToggleExpand={handleToggleExpand}
-                                        recentMarks={recentMarks}
-                                        selectionMode={selectionMode}
-                                        selectedFiles={selectedFiles}
-                                        onToggleSelection={toggleFileSelection}
-                                    />
-                                ) : searchQuery ? (
-                                    <div style={{ padding: "20px", textAlign: "center" }}>
-                                        <Paragraph size="sm">
-                                            No results found for "{searchQuery}"
-                                        </Paragraph>
-                                        <br />
-                                        <Paragraph size="xs">
-                                            Try searching by path, e.g. "plugins/"
-                                        </Paragraph>
-                                    </div>
-                                ) : (
-                                    <Paragraph size="sm" style={{ padding: "20px", textAlign: "center" }}>
-                                        Loading file system.
-                                    </Paragraph>
-                                )}
+                                {renderTreeContent()}
                             </ScrollerThin>
                             {isDropping && (
                                 <div className={cl("drop-overlay")}>
@@ -1289,7 +1301,7 @@ function FileTreeNode({
                 ) : (
                     <span className={`${cl("tree-chevron")} ${cl("invisible")}`} />
                 )}
-                <span className={cl("tree-icon")}>{node.isDirectory ? (expanded ? "📂" : "📁") : getFileIcon(node.name)}</span>
+                <span className={cl("tree-icon")}>{node.isDirectory ? getFolderIcon(expanded) : getFileIcon(node.name)}</span>
                 <Span size="sm" weight="normal" className={cl("tree-label")} title={node.name}>
                     <HighlightMatch text={node.name} query={searchQuery} />
                 </Span>
@@ -2246,7 +2258,7 @@ function formatMaybeJSON(ext: string, content: string): string {
 }
 /** ---------- Settings Tab injection ---------- */
 export function injectSettingsTabs() {
-    const { customEntries, customSections } = SettingsPlugin;
+    const { customEntries } = SettingsPlugin;
 
     customEntries.push({
         key: "vencord_bdcompat_vfs",
@@ -2254,21 +2266,12 @@ export function injectSettingsTabs() {
         Component: () => <FileSystemTab />,
         Icon: FolderIcon
     });
-
-    customSections.push(() => ({
-        section: "VencordBDCompatFS",
-        label: TabName,
-        element: () => <FileSystemTab />,
-        id: "VencordBDCompatFS"
-    }));
 }
 
 export function unInjectSettingsTab() {
-    const { customEntries, customSections } = SettingsPlugin;
+    const { customEntries } = SettingsPlugin;
 
     const entry = customEntries.findIndex(entry => entry.key === "vencord_bdcompat_vfs");
-    const section = customSections.findIndex(section => section({} as any).id === "VencordBDCompatFS");
 
     if (entry !== -1) customEntries.splice(entry, 1);
-    if (section !== -1) customSections.splice(section, 1);
 }

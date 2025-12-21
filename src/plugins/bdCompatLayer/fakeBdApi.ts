@@ -36,9 +36,12 @@ const VenComponents = OptionComponentMap;
 import "./types/bdapi-ui-augment";
 
 import * as VencordCommands from "@api/Commands";
+import { Button as VencordButton } from "@components/Button";
+import { Divider } from "@components/Divider";
+import { Paragraph as VencordParagraph } from "@components/Paragraph";
 import { OptionComponentMap } from "@components/settings/tabs/plugins/components";
 import { OptionType } from "@utils/types";
-import { Forms, lodash, Text } from "@webpack/common";
+import { lodash } from "@webpack/common";
 
 import { ColorPickerSettingComponent } from "./components/ColorPickerSetting";
 import { KeybindSettingComponent } from "./components/KeybindSetting";
@@ -103,13 +106,15 @@ class PatcherWrapper {
  * const { count } = BdApi.Hooks.useStateFromStores([store], () => ({ count: store.count }));
  */
 class FluxCompatibleStore {
-    #listeners: Set<() => void> = new Set();
+    readonly #listeners: Set<() => void> = new Set();
 
     /**
      * Optional lifecycle hook (no-op by default).
      * Can be overridden in subclasses for initialization logic.
      */
-    initialize(): void { }
+    initialize(): void {
+        // Default no-op hook; subclasses can override for setup
+    }
 
     /**
      * Add a change listener.
@@ -302,7 +307,6 @@ function safeStopPlugin(name: string) {
     try { getGlobalApi().Patcher.unpatchAll(name); } catch { }
     try { getGlobalApi().DOM.removeStyle(name); } catch { }
 }
-const pendingChangelogs = new Map<string, { from: string; to: string; }>();
 function vcIsNewer(v1: string, v2: string) {
     const [a, b] = [v1, v2].map(v => v.split(".").map(Number));
     for (let i = 0; i < Math.max(a.length, b.length); i++) {
@@ -325,9 +329,9 @@ function tryShowCompatChangelog(name: string, fromVer: string, toVer: string) {
         });
     };
     const fromConfig =
-        (instance?.config && instance.config.changelog) ||
-        (instance?.constructor?.config && instance.constructor.config.changelog) ||
-        instance?.changelog ||
+        instance?.config?.changelog ??
+        instance?.constructor?.config?.changelog ??
+        instance?.changelog ??
         (typeof instance?.getChangelog === "function" ? instance.getChangelog() : undefined);
     if (Array.isArray(fromConfig) && fromConfig.length) {
         openModal(fromConfig);
@@ -338,7 +342,7 @@ function tryShowCompatChangelog(name: string, fromVer: string, toVer: string) {
         (async () => {
             try {
                 const res = await getGlobalApi().Net.fetch(changelogUrl, {});
-                if (!res || res.status !== 200) return;
+                if (res?.status !== 200) return;
                 const md = await res.text();
                 if (typeof instance?.parseChangelog === "function") {
                     const parsed = instance.parseChangelog(md, fromVer, toVer);
@@ -349,7 +353,7 @@ function tryShowCompatChangelog(name: string, fromVer: string, toVer: string) {
                 const blocks: { version: string; items: string[]; }[] = [];
                 let cur: { version: string; items: string[]; } | null = null;
                 for (const line of lines) {
-                    const ver = line.match(/^###\s+([\d.]+)/)?.[1];
+                    const ver = /^###\s+([\d.]+)/.exec(line)?.[1];
                     if (ver) {
                         if (cur) blocks.push(cur);
                         cur = { version: ver, items: [] };
@@ -385,7 +389,7 @@ function tryShowCompatChangelog(name: string, fromVer: string, toVer: string) {
                 if (buckets.improved.length) changes.push({ title: "Improvements", type: "improved", items: buckets.improved });
                 if (buckets.fixed.length) changes.push({ title: "Bug Fixes", type: "fixed", items: buckets.fixed });
                 if (buckets.other.length) changes.push({ title: "Other Changes", type: "progress", items: buckets.other });
-                openModal(changes);
+                if (changes.length) openModal(changes);
             } catch {
             }
         })();
@@ -411,7 +415,6 @@ async function softReloadBDPlugin(p: AssembledBetterDiscordPlugin) {
     await addCustomPlugin(assembled);
     stampFileSigOnCurrent(p.name);
     if (oldVer && newVer && oldVer !== newVer) {
-        pendingChangelogs.set(p.name, { from: oldVer, to: newVer });
         setTimeout(() => { tryShowCompatChangelog(p.name, oldVer, newVer); }, 800);
     }
 }
@@ -422,7 +425,7 @@ function getFileSig(p: { filename?: string; }) {
         if (!fs || !p?.filename) return undefined;
         const { folder } = getGlobalApi().Plugins;
         const fullPath = `${folder}/${p.filename}`;
-        return fs.statSync(fullPath).mtimeMs | 0;
+        return Math.trunc(fs.statSync(fullPath).mtimeMs);
     } catch {
         return undefined;
     }
@@ -527,13 +530,13 @@ type AssembledTheme = {
 function parseThemeMetadata(css: string, filename: string) {
     const meta = { name: "", author: "", description: "", version: "", id: "" };
     const metaRegex = /\/\*\*([^*]|[\r\n]|(\*+([^*/]|[\r\n])))*\*+\//;
-    const metaMatch = css.match(metaRegex);
+    const metaMatch = metaRegex.exec(css);
     if (!metaMatch) return null;
     const metaBlock = metaMatch[0];
-    const nameMatch = metaBlock.match(/@name\s+(.+)/i);
-    const authorMatch = metaBlock.match(/@author\s+(.+)/i);
-    const descMatch = metaBlock.match(/@description\s+(.+)/i);
-    const versionMatch = metaBlock.match(/@version\s+(.+)/i);
+    const nameMatch = /@name\s+(.+)/i.exec(metaBlock);
+    const authorMatch = /@author\s+(.+)/i.exec(metaBlock);
+    const descMatch = /@description\s+(.+)/i.exec(metaBlock);
+    const versionMatch = /@version\s+(.+)/i.exec(metaBlock);
     if (nameMatch) meta.name = nameMatch[1].trim();
     if (authorMatch) meta.author = authorMatch[1].trim();
     if (descMatch) meta.description = descMatch[1].trim();
@@ -650,8 +653,8 @@ export const ThemesHolder = {
             properties: extractCustomProperties(css)
         };
         const existing = this.themes.findIndex(t => t.id === theme.id);
-        if (existing !== -1) this.themes[existing] = theme;
-        else this.themes.push(theme);
+        if (existing === -1) { this.themes.push(theme); }
+        else { this.themes[existing] = theme; }
         return theme;
     },
     unloadTheme(idOrFilename: string) {
@@ -783,9 +786,13 @@ export const CommandsHolder = {
                     if (result && typeof result === "object") {
                         Promise.resolve(result).then(res => {
                             if (res && (res.content || res.embeds)) {
+                                let embedsArray: any[] = [];
+                                if (Array.isArray(res.embeds)) embedsArray = res.embeds;
+                                else if (res.embeds) embedsArray = [res.embeds];
+
                                 VencordCommands.sendBotMessage(ctx.channel.id, {
                                     content: res.content,
-                                    embeds: Array.isArray(res.embeds) ? res.embeds : (res.embeds ? [res.embeds] : [])
+                                    embeds: embedsArray
                                 });
                             }
                         }).catch(err => {
@@ -826,7 +833,7 @@ export const CommandsHolder = {
     }
 };
 const getOptions = (args: any[], defaultOptions = {}) => {
-    const lastArg = args[args.length - 1];
+    const lastArg = args.at(-1);
     if (typeof lastArg === "object" && lastArg !== null && !Array.isArray(lastArg)) {
         Object.assign(defaultOptions, args.pop());
     }
@@ -843,7 +850,7 @@ export const WebpackHolder = {
     Filters: {
         byDisplayName: name => module => module && module.displayName === name,
         byKeys(...props) {
-            const filter = props.length > 1 && typeof props[props.length - 1] === "function"
+            const filter = props.length > 1 && typeof props.at(-1) === "function"
                 ? (props.pop() as (m: any) => any)
                 : (m: any) => m;
             return (module: any) => {
@@ -892,7 +899,7 @@ export const WebpackHolder = {
             };
         },
         byPrototypeKeys(...fields) {
-            return x => x.prototype && [...fields.flat()].every(field => field in x.prototype);
+            return x => x.prototype && fields.flat().every(field => field in x.prototype);
         },
         byRegex(search, filter = m => m) {
             return module => {
@@ -900,7 +907,10 @@ export const WebpackHolder = {
                 if (!method) return false;
                 let methodString = "";
                 try { methodString = method.toString([]); }
-                catch (err) { methodString = method.toString(); }
+                catch (err) {
+                    compat_logger.debug("[Webpack.Filters.byRegex] toString([]) failed; falling back to toString()", err);
+                    methodString = method.toString();
+                }
                 return methodString.search(search) !== -1;
             };
         },
@@ -933,17 +943,17 @@ export const WebpackHolder = {
             };
         },
     },
-    find(filter, first = true) { return this.getModule(filter, { first }); },
+    find(filter) { return this.getModule(filter, { first: true }); },
     findAll(filter) { return this.getModule(filter, { first: false }); },
     getModule(...args: Parameters<typeof BdApi_getModule>) {
-        if (args[1] && args[1].raw === true) {
+        if (args[1]?.raw === true) {
             const fn = args[0];
             const final = { id: 0, exports: null };
             BdApi_getModule((wrappedExport, module, index) => {
                 const result = fn(wrappedExport, module, index);
                 if (result) {
                     final.exports = module.exports;
-                    final.id = parseInt(index, 10);
+                    final.id = Number.parseInt(index, 10);
                 }
                 return result;
             }, args[1]);
@@ -990,10 +1000,14 @@ export const WebpackHolder = {
     },
     getModuleWithKey(filter) {
         let target, id, key;
-        this.getModule(
-            (e, m, i) => filter(e, m, i) && (target = m) && (id = i) && true,
-            { searchExports: true }
-        );
+        this.getModule((e, m, i) => {
+            const matched = filter(e, m, i);
+            if (matched) {
+                target = m;
+                id = i;
+            }
+            return matched;
+        }, { searchExports: true });
         for (const k in target.exports) {
             if (filter(target.exports[k], target, id)) {
                 key = k;
@@ -1041,8 +1055,8 @@ export const WebpackHolder = {
     getAllByString(...strings) {
         return this.getModule(this.Filters.byStrings(...strings), { first: false });
     },
-    getByRegex(regex, first = true) {
-        return this.getModule(this.Filters.byRegex(regex), { first });
+    getByRegex(regex) {
+        return this.getModule(this.Filters.byRegex(regex), { first: true });
     },
     getAllByRegex(regex) {
         return this.getModule(this.Filters.byRegex(regex), { first: false });
@@ -1054,8 +1068,11 @@ export const WebpackHolder = {
     getAllBySource(match) {
         return this.getModule(this.Filters.bySource(match), { first: false });
     },
-    findByUniqueProperties(props, first = true) {
-        return first ? this.getByProps(...props) : this.getAllByProps(...props);
+    findByUniqueProperties(props) {
+        return this.getByProps(...props);
+    },
+    findAllByUniqueProperties(props) {
+        return this.getAllByProps(...props);
     },
     getStore(name) {
         return WebpackHolder.getModule(WebpackHolder.Filters.byStoreName(name));
@@ -1099,7 +1116,7 @@ export const WebpackHolder = {
             },
             get(target, key: string) {
                 if (typeof key !== "string") return undefined;
-                if (typeof target[key] === "undefined") {
+                if (target[key] === undefined) {
                     target[key] = WebpackHolder.getStore(key);
                 }
                 return target[key];
@@ -1213,10 +1230,10 @@ export const WebpackHolder = {
         const mapperKeys = Object.keys(mappers);
 
         for (const searchKey of moduleKeys) {
-            if (!Object.prototype.hasOwnProperty.call(module, searchKey)) continue;
+            if (!Object.hasOwn(module, searchKey)) continue;
             for (const key of mapperKeys) {
-                if (!Object.prototype.hasOwnProperty.call(mappers, key)) continue;
-                if (Object.prototype.hasOwnProperty.call(mapped, key)) continue;
+                if (!Object.hasOwn(mappers, key)) continue;
+                if (Object.hasOwn(mapped, key)) continue;
                 if (mappers[key](module[searchKey])) {
                     Object.defineProperty(mapped, key, {
                         get() { return module[searchKey]; },
@@ -1228,7 +1245,7 @@ export const WebpackHolder = {
             }
         }
         for (const key of mapperKeys) {
-            if (!Object.prototype.hasOwnProperty.call(mapped, key)) {
+            if (!Object.hasOwn(mapped, key)) {
                 Object.defineProperty(mapped, key, {
                     value: undefined,
                     enumerable: true,
@@ -1243,7 +1260,7 @@ export const WebpackHolder = {
      * Matches BetterDiscord's getBulkKeyed from webpack/utilities.ts
      */
     getBulkKeyed<T extends object>(queries: Record<keyof T, { filter: (m: any) => unknown, searchExports?: boolean, defaultExport?: boolean, searchDefault?: boolean, raw?: boolean, all?: boolean, fatal?: boolean, map?: Record<string, (exp: any) => boolean>; }>): T {
-        const modules = this.getBulk(...Object.values(queries) as any[]);
+        const modules = this.getBulk(...Object.values(queries) as any[]); // NOSONAR: Type assertion required for TypeScript to accept spread of Object.values
         return Object.fromEntries(
             Object.keys(queries).map((key, index) => [key, modules[index]])
         ) as T;
@@ -1318,7 +1335,7 @@ export const DataHolder = {
      * Ensures the plugin's data is loaded into memory from disk.
      */
     latestDataCheck(pluginName: string) {
-        if (typeof this.pluginData[pluginName] !== "undefined") return;
+        if (this.pluginData[pluginName] !== undefined) return;
         const p = PluginsHolder.folder + "/" + pluginName + ".config.json";
         const fs = window.require("fs");
         if (!fs.existsSync(p)) {
@@ -1329,7 +1346,7 @@ export const DataHolder = {
             const text = fs.readFileSync(p, "utf8");
             this.pluginData[pluginName] = JSON.parse(text);
         } catch (e) {
-            compat_logger.debug(`Reset corrupted config: ${pluginName}`);
+            compat_logger.debug(`Reset corrupted config: ${pluginName}`, e);
             this.pluginData[pluginName] = {};
         }
     },
@@ -1373,7 +1390,7 @@ export const DataHolder = {
                 PluginsHolder.folder + "/" + pluginName + ".config.json",
                 JSON.stringify(this.pluginData[pluginName], null, 4)
             );
-        notifyDataChange(pluginName, key, undefined);
+        notifyDataChange(pluginName, key);
     },
 
     /**
@@ -1472,7 +1489,7 @@ export const DataHolder = {
     }
 };
 class DataWrapper {
-    #label: string;
+    readonly #label: string;
     constructor(label: string) {
         this.#label = label;
     }
@@ -1520,7 +1537,7 @@ class DataWrapper {
                 DataHolder.on(this.#label, keyOrListener);
             } else {
                 // Per-key listener
-                DataHolder.on(this.#label, keyOrListener, listener!);
+                DataHolder.on(this.#label, keyOrListener, listener);
             }
         };
     }
@@ -1541,7 +1558,7 @@ class DataWrapper {
                 DataHolder.off(this.#label, keyOrListener);
             } else {
                 // Per-key listener
-                DataHolder.off(this.#label, keyOrListener, listener!);
+                DataHolder.off(this.#label, keyOrListener, listener);
             }
         };
     }
@@ -1572,9 +1589,9 @@ function getUseStateFromStores() {
 }
 export const HooksHolder = {
     useStateFromStores<T>(
-        stores: any[] | any,
+        stores: unknown,
         selector: () => T,
-        deps?: readonly any[],
+        deps?: readonly unknown[],
         comparator?: (a: T, b: T) => boolean
     ): T {
         const hook = getUseStateFromStores();
@@ -1604,9 +1621,9 @@ class HooksWrapper {
         this.#callerName = callerName;
     }
     useStateFromStores<T>(
-        stores: any[] | any,
+        stores: unknown,
         selector: () => T,
-        deps?: readonly any[],
+        deps?: readonly unknown[],
         comparator?: (a: T, b: T) => boolean
     ): T {
         return HooksHolder.useStateFromStores(stores, selector, deps, comparator);
@@ -1952,10 +1969,10 @@ const NotificationStore = {
     add(notification: BdNotification) {
         // Prevent duplicates by ID
         const existing = this.notifications.findIndex(n => n.id === notification.id);
-        if (existing !== -1) {
-            this.notifications[existing] = notification;
-        } else {
+        if (existing === -1) {
             this.notifications.push(notification);
+        } else {
+            this.notifications[existing] = notification;
         }
         this.emit();
     },
@@ -2177,7 +2194,7 @@ function BD_NOTIF_Item(props: { notification: BdNotification; onClose: (id: stri
         ),
         // Body
         content && R.createElement("div", { className: "bd-notif-body" },
-            typeof content === "string" ? content : content
+            content
         ),
         // Footer (actions)
         actions.length > 0 && R.createElement("div", { className: "bd-notif-footer" },
@@ -2327,7 +2344,7 @@ export const UIHolder = {
             if (customNotification) {
                 customNotification.classList.add("close");
                 setTimeout(() => {
-                    document.body.removeChild(container);
+                    container.remove();
                 }, 1000);
             }
         };
@@ -2342,7 +2359,7 @@ export const UIHolder = {
             };
             return docCreateElement("button", { className: "confirm-button", onclick: onClickHandler }, [typeof button.label === "string" ? docCreateElement("span", { innerText: button.label }) : button.label]);
         });
-        const xButton = docCreateElement("button", { onclick: closeNotification, className: "button-with-svg" }, [
+        docCreateElement("button", { onclick: closeNotification, className: "button-with-svg" }, [
             docCreateElement("svg", { className: "xxx" }, [
                 docCreateElement("path", undefined, undefined, {
                     stroke: "white",
@@ -2412,7 +2429,7 @@ export const UIHolder = {
             VencordShowNotification({
                 title: notification.title ?? "Notification",
                 body: typeof notification.content === "string" ? notification.content : "",
-                richBody: typeof notification.content !== "string" ? notification.content as React.ReactNode : undefined,
+                richBody: typeof notification.content === "string" ? undefined : notification.content as React.ReactNode,
                 color: bdTypeToVencordColor(notification.type),
                 onClick: notification.onClose, // BD doesn't have onClick, but onClose on click makes sense
                 onClose: notification.onClose,
@@ -2533,24 +2550,24 @@ export const UIHolder = {
         if (!setting?.id || !setting?.type) {
             throw new Error("Setting item missing id or type");
         }
-        const { React } = getGlobalApi();
+        const { React, Components } = getGlobalApi();
+        const { Paragraph } = Components;
         const component = _createSettingComponent(setting, null, () => { });
         return React.createElement("div", { className: "bd-setting-item", style: { marginBottom: 8 } }, [
-            React.createElement(Text, { variant: "heading-md/semibold" }, setting.name),
+            React.createElement(Paragraph, { size: "md", weight: "semibold" }, setting.name),
             component
         ]);
     },
     buildSettingsPanel(options: { settings: SettingsType[], onChange: CallableFunction; }) {
         const settings: React.ReactNode[] = [];
-        const { React } = getGlobalApi();
+        const { React, Components } = getGlobalApi();
+        const { Paragraph } = Components;
         const defaultCatId = "null";
         const targetSettingsToSet = { enabled: true, [defaultCatId]: { enabled: true, } };
-        for (let i = 0; i < options.settings.length; i++) {
-            const current = options.settings[i];
+        for (const current of options.settings) {
             if (current.type === "category" && current.settings) {
                 targetSettingsToSet[current.id] = { enabled: true, };
-                for (let j = 0; j < current.settings.length; j++) {
-                    const currentInCategory = current.settings[j];
+                for (const currentInCategory of current.settings) {
                     Object.defineProperty(targetSettingsToSet[current.id], currentInCategory.id, {
                         get() {
                             if (typeof currentInCategory.value === "function")
@@ -2579,13 +2596,12 @@ export const UIHolder = {
             }
         }
         const craftOptions = (now: SettingsType[], catName: string) => {
-            for (let i = 0; i < now.length; i++) {
-                const current = now[i];
+            for (const current of now) {
                 if (current.type === "category") {
                     settings.push(
                         React.createElement("div", { style: { marginBottom: 8 } }, [
-                            React.createElement(Forms.FormDivider),
-                            React.createElement(Text, { variant: "heading-lg/semibold" }, current.name)
+                            React.createElement(Divider),
+                            React.createElement(Paragraph, { size: "lg", weight: "semibold" }, current.name)
                         ])
                     );
                     craftOptions(current.settings!, current.id);
@@ -2593,7 +2609,7 @@ export const UIHolder = {
                     const component = _createSettingComponent(current, catName, (cat, id, val) => options.onChange(cat, id, val));
                     settings.push(
                         React.createElement("div", { className: "bd-compat-setting", style: { marginBottom: 8 } }, [
-                            React.createElement(Text, { variant: "heading-md/semibold" }, current.name),
+                            React.createElement(Paragraph, { size: "md", weight: "semibold" }, current.name),
                             component
                         ])
                     );
@@ -2607,7 +2623,7 @@ export const UIHolder = {
 };
 export const DOMHolder = {
     addStyle(id, css) {
-        id = id.replace(/^[^a-z]+|[^\w-]+/gi, "-");
+        id = id.replaceAll(/(?:^[^a-z]+)|(?:[^\w-]+)/gi, "-");
         const style: HTMLElement =
             document
                 .querySelector("bd-styles")
@@ -2617,7 +2633,7 @@ export const DOMHolder = {
         document.querySelector("bd-styles")?.append(style);
     },
     removeStyle(id) {
-        id = id.replace(/^[^a-z]+|[^\w-]+/gi, "-");
+        id = id.replaceAll(/(?:^[^a-z]+)|(?:[^\w-]+)/gi, "-");
         const exists = document
             .querySelector("bd-styles")
             ?.querySelector(`#${id}`);
@@ -2633,7 +2649,7 @@ export const DOMHolder = {
         return element;
     },
     injectScript(targetName: string, url: string) {
-        targetName = targetName.replace(/^[^a-z]+|[^\w-]+/gi, "-");
+        targetName = targetName.replaceAll(/(?:^[^a-z]+)|(?:[^\w-]+)/gi, "-");
         return new Promise((resolve, reject) => {
             const theRemoteScript = document
                 .querySelector("bd-scripts")?.querySelector(`#${targetName}`) || this.createElement("script", { id: targetName });
@@ -2644,7 +2660,7 @@ export const DOMHolder = {
         });
     },
     removeScript(targetName: string) {
-        targetName = targetName.replace(/^[^a-z]+|[^\w-]+/gi, "-");
+        targetName = targetName.replaceAll(/(?:^[^a-z]+)|(?:[^\w-]+)/gi, "-");
         const theRemoteScript = document
             .querySelector("bd-scripts")?.querySelector(`#${targetName}`);
         if (theRemoteScript != null)
@@ -2660,7 +2676,7 @@ export const DOMHolder = {
         return childNodes.length === 1 ? childNodes[0] : childNodes;
     },
     injectTheme(id, css) {
-        id = id.replace(/^[^a-z]+|[^\w-]+/gi, "-");
+        id = id.replaceAll(/(?:^[^a-z]+)|(?:[^\w-]+)/gi, "-");
         const style: HTMLElement =
             document
                 .querySelector("bd-themes")
@@ -2670,7 +2686,7 @@ export const DOMHolder = {
         document.querySelector("bd-themes")?.append(style);
     },
     removeTheme(id) {
-        id = id.replace(/^[^a-z]+|[^\w-]+/gi, "-");
+        id = id.replaceAll(/(?:^[^a-z]+)|(?:[^\w-]+)/gi, "-");
         const exists = document
             .querySelector("bd-themes")
             ?.querySelector(`#${id}`);
@@ -2678,7 +2694,7 @@ export const DOMHolder = {
     },
 };
 class DOMWrapper {
-    #label;
+    readonly #label;
     constructor(label) {
         this.#label = label;
     }
@@ -2709,17 +2725,15 @@ class DOMWrapper {
 const components = {
     Spinner_holder: null as React.Component | null,
     get Spinner() {
-        if (components.Spinner_holder === null)
-            components.Spinner_holder = Vencord.Webpack.findByCode(".SPINNER_LOADING_LABEL");
+        components.Spinner_holder ??= Vencord.Webpack.findByCode(".SPINNER_LOADING_LABEL");
         return components.Spinner_holder;
     },
 };
 class BdApiReImplementationInstance {
-    #targetPlugin;
-    #patcher: PatcherWrapper | typeof Patcher;
-    #data: DataWrapper | typeof DataHolder;
-    #dom: DOMWrapper | typeof DOMHolder;
-    #hooks: HooksWrapper | typeof HooksHolder;
+    readonly #patcher: PatcherWrapper | typeof Patcher;
+    readonly #data: DataWrapper | typeof DataHolder;
+    readonly #dom: DOMWrapper | typeof DOMHolder;
+    readonly #hooks: HooksWrapper | typeof HooksHolder;
     ContextMenu = {};
     labelsOfInstancedAPI: { [key: string]: BdApiReImplementationInstance; };
     constructor(label?: string) {
@@ -2735,9 +2749,8 @@ class BdApiReImplementationInstance {
                 this.#dom = undefined;
                 // @ts-ignore
                 this.#hooks = undefined;
-                return getGlobalApi().labelsOfInstancedAPI[label];
+                return getGlobalApi().labelsOfInstancedAPI[label]; // NOSONAR: Intentional singleton pattern
             }
-            this.#targetPlugin = label;
             this.#patcher = new PatcherWrapper(label);
             this.#data = new DataWrapper(label);
             this.#dom = new DOMWrapper(label);
@@ -2757,7 +2770,7 @@ class BdApiReImplementationInstance {
             this.#dom = DOMHolder;
             this.#hooks = HooksHolder;
             this.labelsOfInstancedAPI = {};
-            return getGlobalApi();
+            return getGlobalApi(); // NOSONAR: Intentional singleton pattern
         }
     }
     get Patcher() {
@@ -2770,15 +2783,18 @@ class BdApiReImplementationInstance {
     Components = {
         get Tooltip() {
             return getGlobalApi().Webpack.getModule(
-                x => x && x.prototype && x.prototype.renderTooltip,
+                x => x?.prototype?.renderTooltip,
                 { searchExports: true }
             );
         },
         get Text() {
-            return Vencord.Webpack.Common.Text;
+            return VencordParagraph;
+        },
+        get Paragraph() {
+            return VencordParagraph;
         },
         get Button() {
-            return Vencord.Webpack.Common.Button;
+            return VencordButton;
         },
         get Spinner() {
             return components.Spinner;
@@ -2812,7 +2828,7 @@ class BdApiReImplementationInstance {
         },
         SettingItem(props: { id: string, name: string, note: string, children: React.ReactNode | React.ReactNode[]; }) {
             const opt = OptionType.COMPONENT;
-            const fakeElement = VenComponents[opt] as typeof VenComponents[keyof typeof VenComponents];
+            const fakeElement = VenComponents[opt];
             return Vencord.Webpack.Common.React.createElement("div", undefined, [Vencord.Webpack.Common.React.createElement(fakeElement, {
                 id: `bd_compat-item-${props.id}`,
                 key: `bd_compat-item-${props.id}`,
@@ -2901,7 +2917,7 @@ class BdApiReImplementationInstance {
                 return React.createElement("div", {
                     ...props,
                     className: joinClasses("bd-flex", direction, justify, align, wrap, className),
-                    style: Object.assign({ flexShrink: shrink, flexGrow: grow, flexBasis: basis }, style)
+                    style: { flexShrink: shrink, flexGrow: grow, flexBasis: basis, ...style }
                 }, children);
             }
             Flex.Child = FlexChild;
@@ -2925,8 +2941,9 @@ class BdApiReImplementationInstance {
     isSettingEnabled(collection, category, id) {
         return false;
     }
-    enableSetting(collection, category, id) { }
-    disableSetting(collection, category, id) { }
+    // NOSONAR: Stub methods for BD API compatibility - not implemented
+    enableSetting(_collection, _category, _id) { /* Not implemented */ }
+    disableSetting(_collection, _category, _id) { /* Not implemented */ }
     get ReactDOM() {
         if (_ReactDOM_With_createRoot.createRoot === undefined)
             Object.assign(_ReactDOM_With_createRoot, { ...Vencord.Webpack.Common.ReactDOM, createRoot: Vencord.Webpack.Common.createRoot });
@@ -2945,7 +2962,7 @@ class BdApiReImplementationInstance {
             /**
              * Gets the internal React fiber instance for a DOM node.
              */
-            getInternalInstance(node: Node & any) {
+            getInternalInstance(node: any) {
                 return node.__reactFiber$ || node[Object.keys(node).find(k => k.startsWith("__reactInternalInstance") || k.startsWith("__reactFiber")) as string] || null;
             },
             /**
@@ -3070,7 +3087,7 @@ class BdApiReImplementationInstance {
     }
     findModuleByProps(...props) {
         return this.findModule(module =>
-            props.every(prop => typeof module[prop] !== "undefined")
+            props.every(prop => module[prop] !== undefined)
         );
     }
     findModule(filter) {
@@ -3176,7 +3193,7 @@ class BdApiReImplementationInstance {
                 v = v.replace(/^v/, "");
                 const [core, preRelease] = v.split("-", 2);
                 const nums = core.split(".").map(p => {
-                    const n = parseInt(p, 10);
+                    const n = Number.parseInt(p, 10);
                     return Number.isSafeInteger(n) && n >= 0 ? n : 0;
                 });
                 return { nums, preRelease: preRelease || null };
@@ -3217,7 +3234,7 @@ class BdApiReImplementationInstance {
     }
     get Net() {
         return {
-            fetch: (url: string, options) => { return fetchWithCorsProxyFallback(url, options, Settings.plugins[PLUGIN_NAME].corsProxyUrl); },
+            fetch: (url: string, options) => { return fetchWithCorsProxyFallback(url, Settings.plugins[PLUGIN_NAME].corsProxyUrl, options); },
         };
     }
     alert(title, content) {
@@ -3252,13 +3269,13 @@ class BdApiReImplementationInstance {
     }
 }
 const api_gettersToSet = ["Commands", "Components", "ContextMenu", "DOM", "Data", "Hooks", "Patcher", "Plugins", "React", "ReactDOM", "ReactUtils", "UI", "Net", "Utils", "Webpack", "labelsOfInstancedAPI", "alert", "disableSetting", "enableSetting", "findModule", "findModuleByProps", "findAllModules", "getData", "isSettingEnabled", "loadData", "monkeyPatch", "saveData", "setData", "showConfirmationModal", "showNotice", "showToast", "suppressErrors", "injectCSS", "Logger", "linkJS", "unlinkJS", "clearCSS", "Themes"];
-const api_settersToSet = ["ContextMenu"];
+const api_settersToSet = new Set(["ContextMenu"]);
 function assignToGlobal() {
     const letsHopeThisObjectWillBeTheOnlyGlobalBdApiInstance = new BdApiReImplementationInstance();
     const descriptors = api_gettersToSet.reduce((acc, key) => {
         acc[key] = {
             get: () => letsHopeThisObjectWillBeTheOnlyGlobalBdApiInstance[key],
-            set: api_settersToSet.includes(key) ? v => letsHopeThisObjectWillBeTheOnlyGlobalBdApiInstance[key] = v : undefined,
+            set: api_settersToSet.has(key) ? v => letsHopeThisObjectWillBeTheOnlyGlobalBdApiInstance[key] = v : undefined,
             configurable: true,
             enumerable: true
         };

@@ -25,9 +25,7 @@
      - closeChangelogModal(key)
      - closeAllChangelogModals()
    Matches BD docs: title/subtitle/blurb/banner/video/poster/footer/changes (added|fixed|improved|progress). */
-
 import { getGlobalApi } from "../fakeBdApi"; // get React + Webpack at runtime
-
 type ChangeType = "fixed" | "added" | "progress" | "improved";
 export interface ChangeSection {
     title: string;
@@ -42,11 +40,10 @@ export interface ChangelogProps {
     banner?: string; // image URL
     video?: string; // youtube or direct video
     poster?: string; // for <video>
-    footer?: any | any[]; // ReactNode|string
+    footer?: any; // ReactNode|string
     changes?: ChangeSection[];
     closeText?: string;
 }
-
 const STYLE_ID = "bd-changelog-runtime-styles";
 function ensureStyles() {
     const { DOM } = getGlobalApi();
@@ -80,22 +77,20 @@ function ensureStyles() {
   `;
     DOM.addStyle(STYLE_ID, css);
 }
-
 function escapeHtml(s: string) {
-    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    return s.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
 function mdInline(s: string) {
-    s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, "<a href=\"$2\" target=\"_blank\" rel=\"noopener noreferrer\">$1</a>");
-    s = s.replace(/`([^`]+)`/g, "<code>$1</code>");
-    s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-    s = s.replace(/\*([^*\n]+)\*/g, "<em>$1</em>");
+    s = s.replaceAll(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, "<a href=\"$2\" target=\"_blank\" rel=\"noopener noreferrer\">$1</a>");
+    s = s.replaceAll(/`([^`]+)`/g, "<code>$1</code>");
+    s = s.replaceAll(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    s = s.replaceAll(/\*([^*\n]+)\*/g, "<em>$1</em>");
     return s;
 }
 function markdownToHtml(s?: string) {
     if (!s) return "";
     return mdInline(escapeHtml(s));
 }
-
 function isYouTube(url: string) { return /(?:youtube\.com|youtu\.be)/i.test(url); }
 function toYouTubeEmbed(url: string) {
     try {
@@ -105,32 +100,23 @@ function toYouTubeEmbed(url: string) {
         return id ? `https://www.youtube.com/embed/${id}` : url;
     } catch { return url; }
 }
-
 const TYPE_META = {
     added: { label: "Added", emoji: "✨", className: "added" },
     fixed: { label: "Fixed", emoji: "🐞", className: "fixed" },
     progress: { label: "Progress", emoji: "⏳", className: "progress" },
     improved: { label: "Improved", emoji: "🚀", className: "improved" },
 } as const;
-
 const registry = new Map<string, { host: HTMLElement; root: any; onKey: (e: KeyboardEvent) => void; }>();
-
 export function showChangelogModal(options: ChangelogProps): string {
     ensureStyles();
-
     const { React } = getGlobalApi();
     // Get React 18 client root API from Discord's bundle
     const ReactDOMClient = getGlobalApi().ReactDOM as any;
-
-
     const key = `cl_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-
     const host = document.createElement("div");
     host.className = "bd-cl-host";
     document.body.appendChild(host);
-
     const onRequestClose = () => closeChangelogModal(key);
-
     const HTML = ({ html }: { html: string; }) => React.createElement("span", { className: "bd-cl-md", dangerouslySetInnerHTML: { __html: html } });
     const Section = ({ section }: { section: ChangeSection; }) => {
         const meta = (TYPE_META as any)[section.type] || TYPE_META.added;
@@ -144,11 +130,10 @@ export function showChangelogModal(options: ChangelogProps): string {
             ),
             section.blurb && React.createElement("div", { className: "bd-cl-section-blurb" }, React.createElement(HTML, { html: markdownToHtml(section.blurb) })),
             Array.isArray(section.items) && section.items.length
-                ? React.createElement("ul", { className: "bd-cl-items" }, section.items.map((it, i) => React.createElement("li", { key: i }, React.createElement(HTML, { html: markdownToHtml(it) }))))
+                ? React.createElement("ul", { className: "bd-cl-items" }, section.items.map(it => React.createElement("li", { key: it }, React.createElement(HTML, { html: markdownToHtml(it) }))))
                 : null
         );
     };
-
     const Banner = ({ banner, video, poster }: { banner?: string; video?: string; poster?: string; }) => {
         if (video) {
             if (isYouTube(video)) {
@@ -164,12 +149,15 @@ export function showChangelogModal(options: ChangelogProps): string {
         if (banner) return React.createElement("div", { className: "bd-cl-banner", "aria-label": "Changelog Banner" }, React.createElement("img", { src: banner, alt: "Changelog banner" }));
         return null;
     };
-
     const { title, subtitle, blurb, banner, video, poster, footer, changes, closeText = "Close" } = options;
-
     const onOverlay = () => onRequestClose();
     const stop = (e: any) => e.stopPropagation();
-
+    let footerItems;
+    if (Array.isArray(footer)) {
+        footerItems = footer;
+    } else {
+        footerItems = footer ? [footer] : [];
+    }
     const modalTree =
         React.createElement(React.Fragment, null,
             React.createElement("div", { className: "bd-cl-overlay", onClick: onOverlay }),
@@ -182,11 +170,11 @@ export function showChangelogModal(options: ChangelogProps): string {
                     ),
                     React.createElement("div", { className: "bd-cl-body" },
                         blurb ? React.createElement("div", { className: "bd-cl-blurb" }, React.createElement(HTML, { html: markdownToHtml(blurb) })) : null,
-                        Array.isArray(changes) ? changes.map((s, i) => React.createElement(Section, { key: i, section: s })) : null
+                        Array.isArray(changes) ? changes.map(s => React.createElement(Section, { key: s.title, section: s })) : null
                     ),
                     React.createElement("footer", { className: "bd-cl-footer" },
                         React.createElement("div", { className: "bd-cl-footer-left" },
-                            ...(Array.isArray(footer) ? footer : (footer ? [footer] : []))
+                            ...footerItems
                         ),
                         React.createElement("div", { className: "bd-cl-actions" },
                             React.createElement("button", { className: "bd-cl-btn bd-cl-close", onClick: onRequestClose, "aria-label": closeText }, closeText)
@@ -195,30 +183,24 @@ export function showChangelogModal(options: ChangelogProps): string {
                 )
             )
         );
-
     // Esc to close
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onRequestClose(); };
     window.addEventListener("keydown", onKey);
-
     let root: any = null;
-
-    if (ReactDOMClient && typeof (ReactDOMClient as any).createRoot === "function") {
-        root = (ReactDOMClient as any).createRoot(host);
+    if (ReactDOMClient && typeof ReactDOMClient.createRoot === "function") {
+        root = ReactDOMClient.createRoot(host);
         root.render(modalTree);
-    } else if (ReactDOMClient && typeof (ReactDOMClient as any).render === "function") {
-        (ReactDOMClient as any).render(modalTree, host); // legacy fallback
+    } else if (ReactDOMClient && typeof ReactDOMClient.render === "function") {
+        ReactDOMClient.render(modalTree, host); // legacy fallback
     } else {
         // Couldn’t find a root API — show a toast and bail gracefully
         try { getGlobalApi().UI.showToast("Changelog: ReactDOM client API not found", { type: "error", forceShow: true }); } catch { }
         host.remove();
         return key;
     }
-
     registry.set(key, { host, root, onKey });
-
     return key;
 }
-
 export function closeChangelogModal(key: string) {
     const rec = registry.get(key);
     if (!rec) return;
@@ -231,7 +213,6 @@ export function closeChangelogModal(key: string) {
         registry.delete(key);
     }
 }
-
 export function closeAllChangelogModals() {
     for (const k of Array.from(registry.keys())) closeChangelogModal(k);
 }

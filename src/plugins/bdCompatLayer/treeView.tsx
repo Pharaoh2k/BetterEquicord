@@ -19,7 +19,8 @@
  *
  * SPDX-License-Identifier: GPL-3.0-only
  */
-import { React, Text } from "@webpack/common";
+import { Span } from "@components/Span";
+import { React } from "@webpack/common";
 
 export interface TreeNode {
     id: string;
@@ -37,7 +38,7 @@ export interface TreeViewProps {
     onContextMenu: (ev: MouseEvent) => void;
 }
 
-export default function TreeView({ data, selectedNode, selectNode, onContextMenu }: TreeViewProps) {
+export default function TreeView({ data, selectedNode, selectNode, onContextMenu }: Readonly<TreeViewProps>) {
     return (
         <div role="tree" aria-label="File tree">
             {data.map(node => (
@@ -74,6 +75,7 @@ function TreeNode({ node, selectedNode, selectNode, onContextMenu, depth }) {
                 aria-level={depth + 1}
                 tabIndex={0}
                 onClick={() => selectNode(node)}
+                onKeyDown={e => { if (e.key === "Enter" || e.key === " ") selectNode(node); }}
                 onContextMenu={e => onContextMenu(e.nativeEvent as any)}
                 style={{
                     paddingLeft: `${depth * 1.5}rem`,
@@ -84,11 +86,15 @@ function TreeNode({ node, selectedNode, selectNode, onContextMenu, depth }) {
                 }}
             >
                 {node.expandable && (
-                    <span onClick={handleToggle} style={{ marginRight: "0.5rem" }}>
+                    <button
+                        type="button"
+                        onClick={handleToggle}
+                        style={{ marginRight: "0.5rem", background: "none", border: "none", cursor: "pointer", padding: 0, color: "inherit" }}
+                    >
                         {expanded ? "▼" : "▶"}
-                    </span>
+                    </button>
                 )}
-                <Text variant="text-sm/normal">{node.label}</Text>
+                <Span>{node.label}</Span>
             </div>
             {expanded && node.children?.map(child => (
                 <TreeNode

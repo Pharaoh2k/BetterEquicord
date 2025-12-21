@@ -38,7 +38,7 @@ export { Patcher } from "./stuffFromBD";
 export class FakeEventEmitter {
     static get EventEmitter() { return FakeEventEmitter; }
     events: Record<string, Set<(...args: any[]) => void>> = {};
-    setMaxListeners() { }
+    setMaxListeners(_n?: number) { /* No-op: fake emitter has no listener limit */ }
     on(event: string, callback: (...args: any[]) => void) {
         if (!this.events[event]) this.events[event] = new Set();
         this.events[event].add(callback);
@@ -85,7 +85,7 @@ export const addContextMenu = async (DiscordModules: any, _proxyUrl: string) => 
     };
 };
 
-export async function fetchWithCorsProxyFallback(url: string, options: any = {}, corsProxy: string) {
+export async function fetchWithCorsProxyFallback(url: string, corsProxy: string, options: any = {}) {
     const reqId = (Date.now().toString(36) + Math.random().toString(36).slice(2, 6));
     try {
         compat_logger.debug(`[${reqId}] Requesting ${url}...`, options);

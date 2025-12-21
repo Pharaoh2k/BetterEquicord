@@ -20,7 +20,6 @@
  * SPDX-License-Identifier: GPL-3.0-only
  */
 
-/* eslint-disable eqeqeq */
 import * as VencordCommands from "@api/Commands";
 import { Settings } from "@api/Settings";
 import { copyToClipboard } from "@utils/clipboard";
@@ -47,6 +46,47 @@ import { injectSettingsTabs, unInjectSettingsTab } from "./fileSystemViewer";
 import { addCustomPlugin, convertPlugin, removeAllCustomPlugins } from "./pluginConstructor";
 import { ReactUtils_filler } from "./stuffFromBD";
 import { aquireNative, compat_logger, FSUtils, getDeferred, reloadCompatLayer, simpleGET, ZIPUtils } from "./utils";
+
+/** Convert GitHub raw URLs to raw.githubusercontent.com format. */
+function fixGhRaw(url: string) {
+    // https://github.com/<org>/<repo>/raw/<ref>/<path> -> https://raw.githubusercontent.com/<org>/<repo>/<ref>/<path>
+    if (url.startsWith("https://github.com/") && url.includes("/raw/")) {
+        return url
+            .replace("https://github.com/", "https://raw.githubusercontent.com/")
+            .replace("/raw/", "/");
+    }
+    return url;
+}
+
+/** Create a fake 'request' polyfill bound to a specific CORS proxy URL. */
+function createFakeRequest(proxyUrl: string) {
+    const fakeRequest = function (url: string, cb: (...args: any[]) => void = () => { }, headers: Record<string, any> = {}) {
+        const stuff = { theCallback: cb };
+        if (typeof headers === "function") {
+            // @ts-ignore
+            cb = headers;
+            headers = stuff.theCallback;
+        }
+        // @ts-ignore
+        delete stuff.theCallback;
+        const fetchOut = fetchWithCorsProxyFallback(fixGhRaw(url), proxyUrl, { ...headers, method: "get" });
+        fetchOut.then(async x => {
+            cb(undefined, {
+                ...x,
+                statusCode: x.status,
+                headers: Object.fromEntries(x.headers.entries()),
+            }, await x.text());
+        });
+        fetchOut.catch(error_ => {
+            cb(error_, undefined, undefined);
+        });
+    };
+    fakeRequest.get = function (url: string, cb: (...args: any[]) => void = () => { }, options: Record<string, any> = {}) {
+        return this(url, cb, { ...options, method: "get" });
+    };
+    return fakeRequest;
+}
+
 // Store state outside the plugin definition since PluginDef doesn't allow custom properties
 const pluginState = {
     originalBuffer: {} as BufferConstructor,
@@ -57,7 +97,7 @@ export default definePlugin({
     name: "BD Compatibility Layer",
     description: "Converts BD plugins to run in Vencord",
     authors: [
-        Devs.adryd /* adryd is a id:0 placeholder to satisfy the CI check for git actions. Real authors are Davvy (id: 568109529884000260), WhoIsThis (id: 917630027477159986) and Pharaoh2k (id: 874825550408089610), which are not currently listed in @utils/constants, but are credited throughout the plugin's copyright statements */
+        Devs.adryd /* adryd is a id:0 placeholder to satisfy the CI check for git actions. Real authors are Davilarek (id: 568109529884000260), WhoIsThis (id: 917630027477159986) and Pharaoh2k (id: 874825550408089610), which are not currently listed in @utils/constants, but are credited throughout the plugin's copyright statements */
     ],
     options: {
         enableExperimentalRequestPolyfills: {
@@ -185,7 +225,21 @@ export default definePlugin({
             Settings.plugins["BD Compatibility Layer"].pluginsStatus = {};
         }
         const reallyUsePoorlyMadeRealFs = false;
-        if (!reallyUsePoorlyMadeRealFs) {
+        if (reallyUsePoorlyMadeRealFs) {
+            const native = aquireNative();
+            compat_logger.warn("Waiting for reimplementation object to be ready...");
+            reimplementationsReady.promise.then(async () => {
+                compat_logger.warn("Enabling real fs...");
+                const req = await native.unsafe_req();
+                ReImplementationObject.fs = await req("fs");
+                ReImplementationObject.path = await req("path");
+                ReImplementationObject.process.env._home_secret = (await native.getUserHome())!;
+                if (!Settings.plugins["BD Compatibility Layer"]?.safeMode)
+                    // @ts-ignore
+                    windowBdCompatLayer.fsReadyPromise.resolve();
+            });
+        }
+        else {
             fetch(
                 proxyUrl +
                 `https://cdn.jsdelivr.net/gh/LosersUnited/ZenFS-builds@${ZENFS_BUILD_HASH}/bin/bundle.js` // TODO: Add option to change this
@@ -228,26 +282,12 @@ export default definePlugin({
                             const path = await (await fetch("https://cdn.jsdelivr.net/npm/path-browserify@1.0.1/index.js")).text();
                             const result = eval.call(window, "(()=>{const module = {};" + path + "return module.exports;})();\n//# sourceURL=betterDiscord://internal/path.js");
                             ReImplementationObject.path = result;
-                            if (Settings.plugins["BD Compatibility Layer"]?.safeMode == undefined || Settings.plugins["BD Compatibility Layer"]?.safeMode == false)
+                            if (!Settings.plugins["BD Compatibility Layer"]?.safeMode)
                                 // @ts-ignore
                                 windowBdCompatLayer.fsReadyPromise.resolve();
                         }
                     );
                 });
-        }
-        else {
-            const native = aquireNative();
-            compat_logger.warn("Waiting for reimplementation object to be ready...");
-            reimplementationsReady.promise.then(async () => {
-                compat_logger.warn("Enabling real fs...");
-                const req = (await native.unsafe_req()) as globalThis.NodeRequire;
-                ReImplementationObject.fs = await req("fs");
-                ReImplementationObject.path = await req("path");
-                ReImplementationObject.process.env._home_secret = (await native.getUserHome())!;
-                if (Settings.plugins["BD Compatibility Layer"]?.safeMode == undefined || Settings.plugins["BD Compatibility Layer"]?.safeMode == false)
-                    // @ts-ignore
-                    windowBdCompatLayer.fsReadyPromise.resolve();
-            });
         }
         let _Router = null;
         const windowBdCompatLayer = {
@@ -261,8 +301,7 @@ export default definePlugin({
                     BdApiReImplementation.Plugins.isEnabled(plugin.name) && typeof plugin.instance.onSwitch === "function" && plugin.instance.onSwitch()
                 ),
             get Router() {
-                if (_Router == null)
-                    _Router = BdApiReImplementation.Webpack.getModule(x => x.listeners && x.flushRoute);
+                _Router ??= BdApiReImplementation.Webpack.getModule(x => x.listeners && x.flushRoute);
                 return _Router as null | { listeners: Set<Function>; };
             },
             fakeClipboard: undefined,
@@ -270,15 +309,6 @@ export default definePlugin({
             queuedPlugins: [],
         };
         window.BdCompatLayer = windowBdCompatLayer;
-        function fixGhRaw(url: string) {
-            // https://github.com/<org>/<repo>/raw/<ref>/<path> -> https://raw.githubusercontent.com/<org>/<repo>/<ref>/<path>
-            if (url.startsWith("https://github.com/") && url.includes("/raw/")) {
-                return url
-                    .replace("https://github.com/", "https://raw.githubusercontent.com/")
-                    .replace("/raw/", "/");
-            }
-            return url;
-        }
         window.GeneratedPlugins = [];
         const ReImplementationObject = {
             fs: {},
@@ -292,7 +322,7 @@ export default definePlugin({
                     }
                     const responseEmitter = new ReImplementationObject.events();
                     const requestEmitter = new ReImplementationObject.events();
-                    const fetchResponse = fetchWithCorsProxyFallback(fixGhRaw(url), { ...options, method: "get" }, proxyUrl);
+                    const fetchResponse = fetchWithCorsProxyFallback(fixGhRaw(url), proxyUrl, { ...options, method: "get" });
                     fetchResponse.then(async x => {
                         requestEmitter.emit("response", responseEmitter);
                         if (x.body) {
@@ -327,30 +357,7 @@ export default definePlugin({
                 }
             },
             get request_() {
-                const fakeRequest = function (url: string, cb = (...args) => { }, headers = {}) {
-                    const stuff = { theCallback: cb };
-                    if (typeof headers === "function") {
-                        // @ts-ignore
-                        cb = headers;
-                        headers = stuff.theCallback;
-                    }
-                    // @ts-ignore
-                    delete stuff.theCallback;
-                    const fetchOut = fetchWithCorsProxyFallback(fixGhRaw(url), { ...headers, method: "get" }, proxyUrl);
-                    fetchOut.then(async x => {
-                        cb(undefined, Object.assign({}, x, {
-                            statusCode: x.status,
-                            headers: Object.fromEntries(x.headers.entries()),
-                        }), await x.text());
-                    });
-                    fetchOut.catch(x => {
-                        cb(x, undefined, undefined);
-                    });
-                };
-                fakeRequest.get = function (url: string, cb = (...args) => { }, options = {}) {
-                    return this(url, cb, { ...options, method: "get" });
-                };
-                return fakeRequest;
+                return createFakeRequest(proxyUrl);
             },
             get request() {
                 if (Settings.plugins["BD Compatibility Layer"]?.enableExperimentalRequestPolyfills === true)
@@ -363,7 +370,7 @@ export default definePlugin({
                     return (VencordNative?.native as any)?.nativeModules ?? {};
                 },
                 get ipcRenderer() {
-                    return (window.require?.("electron") as any)?.ipcRenderer ?? {
+                    return window.require?.("electron")?.ipcRenderer ?? {
                         send: () => { },
                         invoke: () => Promise.resolve(),
                         on: () => { },
@@ -383,11 +390,13 @@ export default definePlugin({
                         throw new Error("Crypto not ready yet - noble/hashes still loading");
                     }
                     const algo = (algorithm || "").toLowerCase();
-                    const impl =
-                        algo === "sha256" ? (noble.sha256 as any) :
-                            algo === "sha512" ? (noble.sha512 as any) :
-                                algo === "sha1" ? (noble.sha1 as any) :
-                                    algo === "md5" ? (noble.md5 as any) : null;
+                    const hashAlgorithms: Record<string, any> = {
+                        sha256: noble.sha256,
+                        sha512: noble.sha512,
+                        sha1: noble.sha1,
+                        md5: noble.md5,
+                    };
+                    const impl = hashAlgorithms[algo] ?? null;
                     if (!impl?.create) throw new Error(`Unsupported hash algorithm: ${algorithm}`);
                     const ctx = impl.create();
                     return {
@@ -407,7 +416,7 @@ export default definePlugin({
                             const out: Uint8Array = ctx.digest();
                             if (encoding === "hex") {
                                 let s = "";
-                                for (let i = 0; i < out.length; i++) s += out[i].toString(16).padStart(2, "0");
+                                for (const byte of out) s += byte.toString(16).padStart(2, "0");
                                 return s;
                             }
                             // Prefer Buffer when available (Discord/Electron envs)
@@ -422,12 +431,12 @@ export default definePlugin({
                             // Fallbacks when Buffer isn't available:
                             if (encoding === "base64") {
                                 let binary = "";
-                                for (let i = 0; i < out.length; i++) binary += String.fromCharCode(out[i]);
+                                for (const byte of out) binary += String.fromCodePoint(byte);
                                 return btoa(binary);
                             }
                             if (encoding === "latin1") {
                                 let s = "";
-                                for (let i = 0; i < out.length; i++) s += String.fromCharCode(out[i] & 0xff);
+                                for (const byte of out) s += String.fromCodePoint(byte & 0xff);
                                 return s;
                             }
                             return out;
@@ -449,7 +458,7 @@ export default definePlugin({
                     cr.getRandomValues(out);
                     // Node returns a Buffer. use Buffer if shim is present
                     // @ts-ignore
-                    const asBuf = (typeof Buffer !== "undefined" ? Buffer.from(out) : out);
+                    const asBuf = (typeof Buffer === "undefined" ? out : Buffer.from(out));
                     if (cb) { cb(null, asBuf); return; }
                     return asBuf;
                 }
@@ -491,10 +500,10 @@ export default definePlugin({
         window.require = FakeRequireRedirect;
         pluginState.originalBuffer = window.Buffer;
         window.Buffer = BdApiReImplementation.Webpack.getModule(x => x.INSPECT_MAX_BYTES)?.Buffer;
-        if (typeof window.global === "undefined") {
+        if (window.global === undefined) {
             pluginState.globalWasNotExisting = true;
             pluginState.globalDefineWasNotExisting = true;
-        } else if (typeof window.global.define === "undefined") {
+        } else if (window.global.define === undefined) {
             pluginState.globalDefineWasNotExisting = true;
         }
         window.global = window.global || globalThis;
@@ -617,7 +626,7 @@ export default definePlugin({
                 /* Helpers to reach DiscordNative and the App wrapper module. */
                 const DN = () => (window.DiscordNative ?? {});
                 const getWebpack = () =>
-                    (window.BdApi && window.BdApi.Webpack) || window.Webpack;
+                    (window.BdApi?.Webpack) || window.Webpack;
                 const getApp = () =>
                     getWebpack()?.getByKeys?.("setEnableHardwareAcceleration", "releaseChannel");
                 /* Fallback implementations for a few App getters. */
@@ -654,9 +663,24 @@ export default definePlugin({
                         }
                     }
                 }
+                /* Create a safe getter that falls back on error and logs once. */
+                function makeSafeGetter(App, key: string, original: () => unknown, fb: () => unknown, enumerable: boolean | undefined, seen: Set<string>) {
+                    return function () {
+                        try {
+                            return original();
+                        } catch (err) {
+                            if (!seen.has(key)) {
+                                seen.add(key);
+                                warn(`Getter App.${key} threw, installing fallback`, err);
+                            }
+                            Object.defineProperty(App, key, { configurable: true, enumerable, get: fb });
+                            return fb();
+                        }
+                    };
+                }
                 /* In debug mode, wrap all getters and harden them on first failure. */
                 function guardAllGetters(App) {
-                    const seen = new Set();
+                    const seen = new Set<string>();
                     const descs = Object.getOwnPropertyDescriptors(App);
                     let wrapped = 0;
                     for (const [key, d] of Object.entries(descs)) {
@@ -669,22 +693,7 @@ export default definePlugin({
                             Object.defineProperty(App, key, {
                                 configurable: true,
                                 enumerable: d.enumerable,
-                                get() {
-                                    try {
-                                        return original();
-                                    } catch (err) {
-                                        if (!seen.has(key)) {
-                                            seen.add(key);
-                                            warn(`Getter App.${key} threw, installing fallback`, err);
-                                        }
-                                        Object.defineProperty(App, key, {
-                                            configurable: true,
-                                            enumerable: d.enumerable,
-                                            get: fb
-                                        });
-                                        return fb();
-                                    }
-                                }
+                                get: makeSafeGetter(App, key, original, fb, d.enumerable, seen)
                             });
                             wrapped++;
                         } catch {
@@ -758,7 +767,7 @@ export default definePlugin({
             const localFs = window.require("fs");
             localFs.mkdirSync(BdApiReImplementation.Plugins.folder, { recursive: true });
             for (const key in this.options) {
-                if (Object.hasOwnProperty.call(this.options, key)) {
+                if (Object.hasOwn(this.options, key)) {
                     if (Settings.plugins["BD Compatibility Layer"]?.[key] && key.startsWith("pluginUrl")) {
                         try {
                             const url = Settings.plugins["BD Compatibility Layer"][key];
@@ -788,8 +797,7 @@ export default definePlugin({
             const plugins = pluginFolder.filter(x =>
                 x.endsWith(".plugin.js")
             );
-            for (let i = 0; i < plugins.length; i++) {
-                const element = plugins[i];
+            for (const element of plugins) {
                 const pluginJS = localFs.readFileSync(
                     BdApiReImplementation.Plugins.folder + "/" + element,
                     "utf8"

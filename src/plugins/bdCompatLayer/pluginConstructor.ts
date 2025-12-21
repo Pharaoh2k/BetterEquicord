@@ -19,10 +19,12 @@
  *
  * SPDX-License-Identifier: GPL-3.0-only
  */
+import { Button as VencordButton } from "@components/Button";
 import ErrorBoundary from "@components/ErrorBoundary";
+import { Paragraph as VencordParagraph } from "@components/Paragraph";
 import { ModalContent, ModalFooter, ModalHeader, ModalRoot, ModalSize, openModal } from "@utils/modal";
 import { OptionType, Plugin } from "@utils/types";
-import { Button, React, Text } from "@webpack/common";
+import { React } from "@webpack/common";
 import { DetailedReactHTMLElement } from "react";
 
 import { PluginMeta } from "~plugins";
@@ -74,13 +76,11 @@ const pluginSettingsModalCreator = (props, name: string, child) => {
         {},
         React.createElement(
             ModalRoot,
-            Object.assign(
-                {
-                    size: ModalSize.MEDIUM,
-                    className: "bd-addon-modal"
-                },
-                props
-            ),
+            {
+                size: ModalSize.MEDIUM,
+                className: "bd-addon-modal",
+                ...props
+            },
             React.createElement(
                 ModalHeader,
                 {
@@ -88,9 +88,10 @@ const pluginSettingsModalCreator = (props, name: string, child) => {
                     className: "bd-addon-modal-header",
                 },
                 React.createElement(
-                    Text,
+                    VencordParagraph,
                     {
-                        variant: "text-lg/bold"
+                        size: "lg",
+                        weight: "bold"
                     },
                     `${name} Settings`,
                 )
@@ -104,7 +105,7 @@ const pluginSettingsModalCreator = (props, name: string, child) => {
                 ModalFooter,
                 { className: "bd-addon-modal-footer" },
                 React.createElement(
-                    Button,
+                    VencordButton,
                     {
                         onClick: props.onClose,
                         className: "bd-button",
@@ -168,18 +169,77 @@ const createOption = (tempOptions: { [x: string]: { type: OptionType; component:
         });
     }
 };
-export async function convertPlugin(BetterDiscordPlugin: string, filename: string, detectDuplicateName: boolean = false, sourcePath = "") {
-    const final = {} as AssembledBetterDiscordPlugin;
-    // Add file stats
-    let stats: any = null;
+
+/** Try to get file stats, returns null if fs is unavailable. */
+function getFileStats(sourcePath: string, filename: string): { atimeMs: number; mtimeMs: number; size: number; } | null {
     try {
         const fs = window.require("fs");
         const fullPath = sourcePath ? `${sourcePath}/${filename}` : filename;
-        stats = fs.existsSync(fullPath) ? fs.statSync(fullPath) : null;
+        return fs.existsSync(fullPath) ? fs.statSync(fullPath) : null;
+    } catch {
+        return null; // fs not available in this environment
     }
-    catch {
-        // fs not available in this environment; skip file stats
+}
+
+/** Apply deprecated BD API fallbacks for name/version/description. */
+function applyDeprecatedFallbacks(final: AssembledBetterDiscordPlugin, filename: string): void {
+    // NOSONAR: intentional use of deprecated BD API for backward compatibility
+    if (!final.name && final.instance.getName) { // NOSONAR
+        final.name = final.instance.getName(); // NOSONAR
+        compat_logger.warn(`[${filename}] Using deprecated getName() method. Use @name in JSDoc instead.`);
     }
+    if (!final.version && final.instance.getVersion) { // NOSONAR
+        final.version = final.instance.getVersion() || "6.6.6"; // NOSONAR
+        compat_logger.warn(`[${filename}] Using deprecated getVersion() method. Use @version in JSDoc instead.`);
+    }
+    if (!final.description && final.instance.getDescription) { // NOSONAR
+        final.description = final.instance.getDescription(); // NOSONAR
+        compat_logger.warn(`[${filename}] Using deprecated getDescription() method. Use @description in JSDoc instead.`);
+    }
+}
+
+/** Check for missing required metadata and throw if incomplete. */
+function validateRequiredMetadata(final: AssembledBetterDiscordPlugin): void {
+    const neededMeta = ["name", "version", "description"];
+    const missing = neededMeta.filter(prop => !final[prop]);
+    if (missing.length === 0) return;
+
+    const missingList = missing.join(", ");
+    const newTextElement = document.createElement("div");
+    newTextElement.innerHTML = `The BD Plugin ${final.name || final.id} is missing the following metadata below<br><br>
+        <strong>${missingList.toUpperCase()}</strong><br><br>
+        The plugin could not be started, Please fix.`;
+    getGlobalApi().showNotice(newTextElement, {
+        timeout: 0,
+        buttons: [{
+            label: "Didn't ask ;-)",
+            onClick: () => console.log("Didn't have to be so mean about it .·´¯`(>▂<)´¯`· \nI'll go away"),
+        }]
+    });
+    throw new Error("Incomplete plugin, " + newTextElement.innerHTML);
+}
+
+/** Build plugin options from metadata. */
+function buildPluginOptions(final: AssembledBetterDiscordPlugin): Record<string, any> {
+    const tempOptions: Record<string, any> = {
+        versionLabel: {
+            type: OptionType.COMPONENT,
+            component: () => createTextForm("Version", final.version),
+        }
+    };
+    createOption(tempOptions, "inviteLabel", "Author's Server", final.invite ? `https://discord.gg/${final.invite}` : undefined, true);
+    createOption(tempOptions, "sourceLabel", "Plugin Source", final.source, true);
+    createOption(tempOptions, "websiteLabel", "Plugin's Website", final.website, true);
+    createOption(tempOptions, "authorLabel", "Author's Website", final.authorLink, true);
+    createOption(tempOptions, "donateLabel", "Author's Donation", final.donate, true);
+    createOption(tempOptions, "patreonLabel", "Author's Patreon", final.patreon, true);
+    createOption(tempOptions, "authorsLabel", "Author", final.authors[0]?.name);
+    return tempOptions;
+}
+export async function convertPlugin(BetterDiscordPlugin: string, filename: string, detectDuplicateName: boolean = false, sourcePath = "") {
+    const final = {} as AssembledBetterDiscordPlugin;
+    // Add file stats
+    const stats = getFileStats(sourcePath, filename);
     final.started = false;
     final.sourcePath = sourcePath;
     final.filename = filename;
@@ -201,8 +261,8 @@ export async function convertPlugin(BetterDiscordPlugin: string, filename: strin
             description: "Open settings",
             component: () =>
                 React.createElement(
-                    Button,
-                    { onClick: () => openSettingsModalForPlugin(final), disabled: !(typeof final.instance.getSettingsPanel === "function") },
+                    VencordButton,
+                    { onClick: () => openSettingsModalForPlugin(final), disabled: typeof final.instance.getSettingsPanel !== "function" },
                     "Open settings"
                 ),
         },
@@ -218,7 +278,6 @@ export async function convertPlugin(BetterDiscordPlugin: string, filename: strin
         final.modified = stats.mtimeMs;
         final.size = stats.size;
     }
-    const { metaEndLine } = parsedMeta;
     // we already have all needed meta at this point
     final.myProxy = new Proxy(final, {
         get(t, p) {
@@ -231,7 +290,7 @@ export async function convertPlugin(BetterDiscordPlugin: string, filename: strin
     if (typeof exports === "object") {
         exports = exports[final.name] ?? exports.default;
     }
-    if (typeof exports === "undefined") {
+    if (exports === undefined) {
         exports = final.internals.module.workingTmp;
     }
     try {
@@ -244,19 +303,7 @@ export async function convertPlugin(BetterDiscordPlugin: string, filename: strin
     // passing the plugin object directly as "meta".
     if (typeof final.instance.load === "function")
         final.instance.load();
-    // Use deprecated methods ONLY as fallbacks
-    if (!final.name && final.instance.getName) {
-        final.name = final.instance.getName();
-        compat_logger.warn(`[${filename}] Using deprecated getName() method. Use @name in JSDoc instead.`);
-    }
-    if (!final.version && final.instance.getVersion) {
-        final.version = final.instance.getVersion() || "6.6.6";
-        compat_logger.warn(`[${filename}] Using deprecated getVersion() method. Use @version in JSDoc instead.`);
-    }
-    if (!final.description && final.instance.getDescription) {
-        final.description = final.instance.getDescription();
-        compat_logger.warn(`[${filename}] Using deprecated getDescription() method. Use @description in JSDoc instead.`);
-    }
+    applyDeprecatedFallbacks(final, filename);
     console.log(final.instance);
     (final as any).originalName = final.name;
     if (detectDuplicateName) {
@@ -265,47 +312,8 @@ export async function convertPlugin(BetterDiscordPlugin: string, filename: strin
             final.name += "-BD";
         }
     }
-    const neededMeta = ["name", "version", "description"];
-    const whatsMissingDavil = neededMeta.filter(prop => !final || !final[prop]);
-    if (whatsMissingDavil.length > 0) {
-        const ThisShouldGiveUsWhatIsMissingInThePlugin = whatsMissingDavil.join(", ");
-        const newTextElement = document.createElement("div");
-        newTextElement.innerHTML = `The BD Plugin ${final.name || final.id} is missing the following metadata below<br><br>
-        <strong>${ThisShouldGiveUsWhatIsMissingInThePlugin.toUpperCase()}</strong><br><br>
-        The plugin could not be started, Please fix.`;
-        getGlobalApi().showNotice(newTextElement, {
-            timeout: 0,
-            buttons: [
-                {
-                    label: "Didn't ask ;-)",
-                    onClick: () => {
-                        console.log("Didn't have to be so mean about it .·´¯`(>▂<)´¯`· \nI'll go away");
-                    },
-                }
-            ]
-        });
-        throw new Error("Incomplete plugin, " + newTextElement.innerHTML);
-    }
-    const tempOptions = {};
-    // eslint-disable-next-line @typescript-eslint/dot-notation
-    tempOptions["versionLabel"] = {
-        type: OptionType.COMPONENT,
-        component: () => createTextForm("Version", final.version),
-    };
-    createOption(tempOptions, "inviteLabel", "Author's Server", final.invite ? `https://discord.gg/${final.invite}` : undefined, true);
-    createOption(tempOptions, "sourceLabel", "Plugin Source", final.source, true);
-    createOption(tempOptions, "websiteLabel", "Plugin's Website", final.website, true);
-    createOption(tempOptions, "authorLabel", "Author's Website", final.authorLink, true);
-    createOption(tempOptions, "donateLabel", "Author's Donation", final.donate, true);
-    createOption(tempOptions, "patreonLabel", "Author's Patreon", final.patreon, true);
-    createOption(tempOptions, "authorsLabel", "Author", final.authors[0]?.name);
-    final.options = { ...tempOptions, ...final.options };
-    for (const prop in tempOptions) {
-        if (Object.prototype.hasOwnProperty.call(tempOptions, prop)) {
-            tempOptions[prop] = null;
-        }
-    }
-    Object.assign(tempOptions, {});
+    validateRequiredMetadata(final);
+    final.options = { ...buildPluginOptions(final), ...final.options };
     const startFunction = function (this: AssembledBetterDiscordPlugin) {
         const compatLayerSettings = Vencord.Settings.plugins[PLUGIN_NAME];
         compatLayerSettings.pluginsStatus[this.name] = true;
@@ -318,7 +326,7 @@ export async function convertPlugin(BetterDiscordPlugin: string, filename: strin
     };
     final.start = startFunction.bind(final);
     final.stop = stopFunction.bind(final);
-    var index = (window.BdCompatLayer.queuedPlugins as any[]).findIndex(x => x.filename === final.filename);
+    const index = (window.BdCompatLayer.queuedPlugins as any[]).findIndex(x => x.filename === final.filename);
     if (index !== -1) {
         (window.BdCompatLayer.queuedPlugins as any[]).splice(index, 1);
     }
@@ -358,7 +366,7 @@ const test_util = (source: string, what: string) => {
         `analysis: \n${valid.split("\n").map(x => "\t" + x).join("\n")}`;
 };
 const stripBOM = (fileContent: string) => {
-    if (fileContent.charCodeAt(0) === 0xFEFF) {
+    if (fileContent.codePointAt(0) === 0xFEFF) {
         fileContent = fileContent.slice(1);
     }
     return fileContent;
@@ -380,7 +388,7 @@ function parseNewMeta(pluginCode: string, filename: string) {
             lineNumber++;
             if (line.length === 0) continue;
             const bdCompatSettings = Vencord.Settings?.plugins?.["BD Compatibility Layer"];
-            if (bdCompatSettings?.bdCompatDebug && line.charAt(0) === "@") {
+            if (bdCompatSettings?.bdCompatDebug && line.startsWith("@")) {
                 compat_logger.debug(
                     `[Meta Parser] ${filename} line ${lineNumber}: "${line.substring(0, 50)}..."\n` +
                     test_util(line, "@name") + "\n" +
@@ -390,18 +398,18 @@ function parseNewMeta(pluginCode: string, filename: string) {
                     test_util(line, "@version")
                 );
             }
-            if (line.charAt(0) === "@" && line.charAt(1) !== " ") {
-                if (!out[field]) {
-                    out[field] = accum.trim();
-                } else {
+            if (line.startsWith("@") && !line.startsWith("@ ")) {
+                if (out[field]) {
                     if (!Array.isArray(out[field])) out[field] = [out[field] as string];
                     (out[field] as string[]).push(accum.trim());
+                } else {
+                    out[field] = accum.trim();
                 }
                 const l = line.indexOf(" ");
                 field = line.substring(1, l);
                 accum = line.substring(l + 1);
             } else {
-                accum += " " + line.replace("\\n", "\n").replace(escapedAtRegex, "@");
+                accum += " " + line.replace(String.raw`\n`, "\n").replace(escapedAtRegex, "@");
             }
         }
     } catch (error) {
@@ -428,11 +436,11 @@ function parseNewMeta(pluginCode: string, filename: string) {
         throw error;
     }
     // Save the last accumulated field
-    if (!out[field]) {
-        out[field] = accum.trim();
-    } else {
+    if (out[field]) {
         if (!Array.isArray(out[field])) out[field] = [out[field] as string];
         (out[field] as string[]).push(accum.trim());
+    } else {
+        out[field] = accum.trim();
     }
     delete out[""];
     out.format = "jsdoc";
@@ -450,9 +458,11 @@ function parseNewMeta(pluginCode: string, filename: string) {
     const authorIdField = out.authorId;
     if (authorField) {
         const authorNames = Array.isArray(authorField) ? authorField : [authorField];
-        const authorIds = authorIdField
-            ? (Array.isArray(authorIdField) ? authorIdField : [authorIdField]).map(id => BigInt(id.trim()))
-            : [];
+        let authorIdList: string[] = [];
+        if (authorIdField) {
+            authorIdList = Array.isArray(authorIdField) ? authorIdField : [authorIdField];
+        }
+        const authorIds = authorIdList.map(id => BigInt(id.trim()));
         authorNames.forEach((name, i) => {
             resultMeta.authors.push({
                 name: name.trim(),
@@ -508,7 +518,7 @@ export async function addCustomPlugin(generatedPlugin: AssembledBetterDiscordPlu
     // Stamp a file signature so enable() can detect future on-disk updates
     try {
         (Vencord.Plugins.plugins[generated.name] as any).__bdFileSig =
-            (window as any).require?.("fs")?.statSync(`${getGlobalApi().Plugins.folder}/${generated.filename}`)?.mtimeMs | 0;
+            Math.trunc((window as any).require?.("fs")?.statSync(`${getGlobalApi().Plugins.folder}/${generated.filename}`)?.mtimeMs ?? 0);
     } catch { }
     Vencord.Settings.plugins[generated.name].enabled = false;
     const compatLayerSettings = Vencord.PlainSettings.plugins[PLUGIN_NAME];
@@ -536,8 +546,7 @@ export async function removeAllCustomPlugins() {
         delete Vencord.Plugins.plugins[generated.name];
         delete copyOfGeneratedPlugin[GeneratedPlugins.indexOf(generated)];
     };
-    for (let i = 0; i < GeneratedPlugins.length; i++) {
-        const element = GeneratedPlugins[i];
+    for (const element of GeneratedPlugins) {
         removePlugin(element);
     }
     if (window.BDFDB_Global)

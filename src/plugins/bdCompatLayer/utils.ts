@@ -19,10 +19,12 @@
  *
  * SPDX-License-Identifier: GPL-3.0-only
  */
+import { Heading } from "@components/Heading";
 import { Link } from "@components/Link";
+import { Paragraph } from "@components/Paragraph";
 import { Logger } from "@utils/Logger";
 import { PluginNative } from "@utils/types";
-import { Forms, lodash, React } from "@webpack/common";
+import { lodash, React } from "@webpack/common";
 import * as fflate from "fflate";
 
 import { getGlobalApi } from "./fakeBdApi";
@@ -82,7 +84,7 @@ addLogger.stacktrace = (name: string, label: string, error: any) => {
 };
 
 export function simpleGET(url: string, headers?: any) {
-    var httpRequest = new XMLHttpRequest();
+    const httpRequest = new XMLHttpRequest();
 
     httpRequest.open("GET", url, false);
     if (headers)
@@ -127,14 +129,14 @@ export function createTextForm(field1: React.ReactNode | string, field2: string,
         "div",
         {},
         React.createElement(
-            Forms.FormTitle,
+            Heading,
             {
                 tag: "h3",
             },
             [
                 field1,
                 React.createElement(
-                    Forms.FormText,
+                    Paragraph,
                     {},
                     asLink ? React.createElement(Link, { href: field2 }, linkLabel) : field2,
                 ),
@@ -188,7 +190,7 @@ export function openFileSelect(filter = "*", bulk = false) {
         input.multiple = bulk;
         input.accept = filter;
         const timeout = setTimeout(() => {
-            reject();
+            reject(new Error("File selection timed out"));
             // so we don't wait forever
         }, 30 * 60 * 1000);
         input.addEventListener("change", () => {
@@ -197,7 +199,7 @@ export function openFileSelect(filter = "*", bulk = false) {
                 resolve(bulk ? Array.from(input.files) : input.files[0]);
             } else {
                 clearTimeout(timeout);
-                reject("No file selected.");
+                reject(new Error("No file selected."));
             }
         });
 
@@ -216,8 +218,7 @@ export async function reloadCompatLayer() {
     const plugins = pluginFolder.filter(x =>
         x.endsWith(".plugin.js")
     );
-    for (let i = 0; i < plugins.length; i++) {
-        const element = plugins[i];
+    for (const element of plugins) {
         const pluginJS = localFs.readFileSync(
             getGlobalApi().Plugins.folder + "/" + element,
             "utf8"
@@ -226,8 +227,8 @@ export async function reloadCompatLayer() {
         conv.then(plugin => {
             addCustomPlugin(plugin);
         });
-        conv.catch(what => {
-            compat_logger.error("Error during conversion of", element, "what was:", what);
+        conv.catch(error_ => {
+            compat_logger.error("Error during conversion of", element, "what was:", error_);
         });
     }
 }
@@ -275,7 +276,7 @@ export async function reloadPluginsSelectively(changedFiles: string[]) {
 export function docCreateElement(tag: string, props: Record<string, any> = {}, childNodes: Node[] = [], attrs: Record<string, string> = {}) {
     const element = document.createElement(tag);
 
-    for (const [key, value] of Object.entries<string | any>(props)) {
+    for (const [key, value] of Object.entries(props)) {
         element[key] = value;
     }
 
@@ -300,8 +301,7 @@ export const FSUtils = {
 
         const result = {};
 
-        for (let i = 0; i < files.length; i++) {
-            const file = files[i];
+        for (const file of files) {
             const filePath = path.join(dirPath, file);
             const stat = fs.statSync(filePath);
 
@@ -338,7 +338,7 @@ export const FSUtils = {
                         tree[key],
                         newPath
                     );
-                    paths = Object.assign({}, paths, nestedPaths);
+                    paths = { ...paths, ...nestedPaths };
                 } else {
                     paths[newPath] = tree[key];
                 }
@@ -354,8 +354,7 @@ export const FSUtils = {
         const fs = window.require("fs");
         const path = window.require("path");
         const files = fs.readdirSync(directoryPath);
-        for (let i = 0; i < files.length; i++) {
-            const file = files[i];
+        for (const file of files) {
             const currentPath = path.join(directoryPath, file);
 
             if (fs.lstatSync(currentPath).isDirectory()) {
@@ -373,7 +372,7 @@ export const FSUtils = {
         );
         const fs = window.require("fs");
         for (const key in filesystem) {
-            if (Object.hasOwnProperty.call(filesystem, key)) {
+            if (Object.hasOwn(filesystem, key)) {
                 fs.unlinkSync("/" + key);
             }
         }
@@ -395,9 +394,8 @@ export const FSUtils = {
     },
     async importFile(targetPath: string, autoGuessName: boolean = false, bulk = false, filter: string | undefined = undefined) {
         const fileOrFiles = await openFileSelect(filter, bulk);
-        const files = Array.isArray(fileOrFiles) ? (fileOrFiles as File[]) : [fileOrFiles as File];
+        const files = Array.isArray(fileOrFiles) ? fileOrFiles : [fileOrFiles];
         const fs = window.require("fs");
-        const path = window.require("path");
 
         // Use promises.writeFile or promisify
         const writeFilePromise = (filePath: string, buffer: Uint8Array) => {
@@ -486,11 +484,11 @@ export async function unzipFile(file: File) {
     const reader = file.stream().getReader();
     const read = async () => {
         await reader.read().then(async res => {
-            if (!res.done) {
+            if (res.done) {
+                unZipper.push(new Uint8Array(0), true);
+            } else {
                 unZipper.push(res.value, res.done);
                 await read();
-            } else {
-                unZipper.push(new Uint8Array(0), true);
             }
         });
     };
@@ -520,8 +518,7 @@ export const ZIPUtils = {
         const fileSelected = await openFileSelect() as File;
         const zip1 = await unzipFile(fileSelected);
         FSUtils.formatFs();
-        for (let i = 0; i < zip1.length; i++) {
-            const element = zip1[i];
+        for (const element of zip1) {
             compat_logger.log("[Importer] Now: " + element.name);
             const fullReadPromise = new Promise<Uint8Array[]>((resolve, reject) => {
                 const out: Uint8Array[] = [];
@@ -602,7 +599,7 @@ export const ObjectMerger = {
         return undefined;
     },
 
-    skip(obj: null | object | Array<any>) {
+    skip(obj: null | object | unknown[]) {
         if (typeof (obj) !== "object") return true;
         if (obj === null) return true;
         if (Array.isArray(obj)) return true;
@@ -620,8 +617,8 @@ export const ObjectMerger = {
 //  Discord keybind registry helpers
 
 let __keybindsResolved = false;
-let __KeybindsModule: any | undefined;
-let __KeybindStore: any | undefined;
+let __KeybindsModule: any;
+let __KeybindStore: any;
 
 export function resolveKeybinds() {
     if (__keybindsResolved) return { KeybindsModule: __KeybindsModule, KeybindStore: __KeybindStore };
@@ -694,7 +691,7 @@ export function deleteKeybind(id: string) {
             KeybindsModule.deleteKeybind(id);
         }
         // If it doesn't exist, silently skip (it's probably a BD-only keybind)
-    } catch (e) {
+    } catch {
         // Silently fail if there's any error
     }
 }
