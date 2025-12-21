@@ -896,7 +896,7 @@ function FileSystemTab() {
                     <QuickAction text="Export Filesystem as ZIP" action={() => ZIPUtils.downloadZip()} Icon={FolderIcon} />
                     <QuickAction text="Import Filesystem From ZIP" action={() => ZIPUtils.importZip()} Icon={FolderIcon} />
                     <QuickAction text="Reload BD Plugins" action={() => reloadCompatLayer()} Icon={RestartIcon} />
-                    <QuickAction text="Import BD Plugin/s" action={() => handlePluginImport(true)} Icon={FolderIcon} />
+                    <QuickAction text="Import BD Plugin/sz" action={() => handlePluginImport(true)} Icon={FolderIcon} />
                 </QuickActionCard>
             </Paragraph>
             <Paragraph>
