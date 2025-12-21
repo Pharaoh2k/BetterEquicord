@@ -336,8 +336,13 @@ function getStorageBarColor(percent: number): string {
     if (percent > 75) return "var(--status-warning)";
     return "var(--status-positive)";
 }
-function getFolderIcon(expanded: boolean): string {
-    return expanded ? "📂" : "📁";
+const FOLDER_ICON_EXPANDED = "📂";
+const FOLDER_ICON_COLLAPSED = "📁";
+function getExpandedFolderIcon(): string {
+    return FOLDER_ICON_EXPANDED;
+}
+function getCollapsedFolderIcon(): string {
+    return FOLDER_ICON_COLLAPSED;
 }
 async function reloadPlugin(path: string) {
     const p = pathLib();
@@ -577,7 +582,8 @@ function FileSystemTab() {
         }
         await refreshTreePreservingExpansion(true);
         const addedStr = added.length ? `Added ${added.length}` : "";
-        const updStr = updated.length ? `${added.length ? " · " : ""}Updated ${updated.length}` : "";
+        const separator = added.length && updated.length ? " · " : "";
+        const updStr = updated.length ? `${separator}Updated ${updated.length}` : "";
         const msg = addedStr || updStr ? `${addedStr}${updStr}` : `Imported ${plugins.length}`;
         getGlobalApi().UI.showToast(`${msg} plugin${(added.length + updated.length) === 1 ? "" : "s"} via drag & drop.`);
     };
@@ -613,7 +619,8 @@ function FileSystemTab() {
             }
             await refreshTreePreservingExpansion(true);
             const addedStr = added.length ? `Added ${added.length}` : "";
-            const updStr = updated.length ? `${added.length ? " · " : ""}Updated ${updated.length}` : "";
+            const separator = added.length && updated.length ? " · " : "";
+            const updStr = updated.length ? `${separator}Updated ${updated.length}` : "";
             const msg = addedStr || updStr ? `${addedStr}${updStr}` : "Imported plugin(s)";
             getGlobalApi().UI.showToast(`${msg} and reloaded.`);
         } catch (e) {
@@ -1259,6 +1266,8 @@ function FileTreeNode({
     const handleToggleSelection = () => onToggleSelection(node.path);
 
     const handleActivate = selectionMode ? handleToggleSelection : handleSelect;
+    const folderIcon = expanded ? getExpandedFolderIcon() : getCollapsedFolderIcon();
+    const nodeIcon = node.isDirectory ? folderIcon : getFileIcon(node.name);
 
     return (
         <>
@@ -1301,7 +1310,7 @@ function FileTreeNode({
                 ) : (
                     <span className={`${cl("tree-chevron")} ${cl("invisible")}`} />
                 )}
-                <span className={cl("tree-icon")}>{node.isDirectory ? getFolderIcon(expanded) : getFileIcon(node.name)}</span>
+                <span className={cl("tree-icon")}>{nodeIcon}</span>
                 <Span size="sm" weight="normal" className={cl("tree-label")} title={node.name}>
                     <HighlightMatch text={node.name} query={searchQuery} />
                 </Span>
@@ -1384,8 +1393,14 @@ function InlineMonacoViewer({
             try { modelRef.current?.dispose?.(); } catch { }
         };
     }, [value, language, readOnly]);
+    const stopPropagation = (e: any) => e.stopPropagation();
     return (
-        <div style={{ height, border: "1px solid var(--background-mod-strong)", borderRadius: "0.5rem" }}>
+        <div
+            role="none"
+            style={{ height, border: "1px solid var(--background-mod-strong)", borderRadius: "0.5rem" }}
+            onKeyDown={stopPropagation} onKeyUp={stopPropagation}
+            onPaste={stopPropagation} onCopy={stopPropagation} onCut={stopPropagation}
+        >
             <div ref={hostRef} style={{ width: "100%", height: "100%" }} />
             {!monacoReady && (
                 <div style={{ padding: "20px", textAlign: "center" }}>
@@ -1406,6 +1421,8 @@ function FilePreview({ file, onSaved }: FilePreviewProps) {
     const [isLoading, setIsLoading] = useState(true);
     const [isEditing, setIsEditing] = useState(false);
     const [editorValue, setEditorValue] = useState("");
+    const editorValueRef = useRef(""); // Fix: Ref to track latest value
+    useEffect(() => { editorValueRef.current = editorValue; }, [editorValue]);
     const [dirty, setDirty] = useState(false);
     const [saving, setSaving] = useState(false);
     const [isTruncated, setIsTruncated] = useState(false);
@@ -1497,7 +1514,8 @@ function FilePreview({ file, onSaved }: FilePreviewProps) {
         }, 1000);
     };
     async function doSave(valueOverride?: string) {
-        const dataToWrite = valueOverride ?? editorValue;
+        // Fix: Read from ref to ensure we save the latest keystrokes
+        const dataToWrite = valueOverride ?? editorValueRef.current;
         if (valueOverride == null && (!isEditing || !dirty)) return;
         setSaving(true);
         try {
@@ -1745,6 +1763,7 @@ function DetachedMonacoEditor({
     const savedVersionRef = React.useRef<number>(0);
     const decoIdsRef = React.useRef<string[]>([]);
     const [monacoReady, setMonacoReady] = React.useState(false);
+    const [cursorStats, setCursorStats] = React.useState("Ln 1, Col 1");
     const touchCountsRef = React.useRef<Map<number, number>>(new Map());
     const decoTimerRef = React.useRef<number | null>(null);
     function scheduleDecorations() {
@@ -1811,6 +1830,9 @@ function DetachedMonacoEditor({
                 monaco.KeyMod?.CtrlCmd | monaco.KeyCode?.KeyS,
                 () => handleSave(monaco)
             );
+            editorRef.current.onDidChangeCursorPosition((e: any) => {
+                setCursorStats(`Ln ${e.position.lineNumber}, Col ${e.position.column}`);
+            });
             const sub = editorRef.current.onDidChangeModelContent((e: any) => {
                 const currentVid = modelRef.current.getAlternativeVersionId();
                 setIsDirty(currentVid !== savedVersionRef.current);
@@ -1921,18 +1943,38 @@ function DetachedMonacoEditor({
                     </Button>
                 </div>
             )}
-            <div className={cl("detached-editor-body")} ref={hostRef}>
+            <div
+                role="none"
+                className={cl("detached-editor-body")}
+                ref={hostRef}
+                onKeyDown={e => e.stopPropagation()}
+                onKeyUp={e => e.stopPropagation()}
+                onPaste={e => e.stopPropagation()}
+                onCopy={e => e.stopPropagation()}
+                onCut={e => e.stopPropagation()}
+            >
                 {!monacoReady && (
                     <div style={{
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        height: "100%",
-                        color: "var(--text-muted)"
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        height: "100%", color: "var(--text-muted)"
                     }}>
                         Loading editor...
                     </div>
                 )}
+            </div>
+            {/* Status Bar */}
+            <div style={{
+                padding: "4px 12px",
+                background: "var(--background-secondary-alt)",
+                borderTop: "1px solid var(--background-mod-subtle)",
+                fontSize: "12px",
+                color: "var(--text-muted)",
+                display: "flex",
+                justifyContent: "space-between",
+                userSelect: "none"
+            }}>
+                <span>{cursorStats}</span>
+                <span style={{ textTransform: "uppercase" }}>{language}</span>
             </div>
         </div>
     );
