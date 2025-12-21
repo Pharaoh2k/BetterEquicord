@@ -74,7 +74,7 @@ export function SliderSettingComponent(props: SliderProps) {
     const format = (v: number) => Math.round(v * 100) / 100;
 
     const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-        const v = parseFloat(e.target.value);
+        const v = Number.parseFloat(e.target.value);
         setValue(v);
         props.onChange(v);
     };
@@ -91,11 +91,11 @@ export function SliderSettingComponent(props: SliderProps) {
         React.createElement("div", { className: "bd-slider-label", style: { left: `${percent(value)}%` } }, `${format(value)}${units}`),
         React.createElement("div", { className: "bd-slider-track", style: { backgroundSize: `${percent(value)}% 100%` } }),
         hasMarkers && React.createElement("div", { className: "bd-slider-markers" },
-            markers.map((m, i) => {
+            markers.map(m => {
                 const val = typeof m === "number" ? m : m.value;
                 const label = typeof m === "number" ? m : (m.label ?? m.value);
                 return React.createElement("div", {
-                    key: i,
+                    key: val,
                     className: "bd-slider-marker",
                     style: { left: `${percent(val)}%` },
                     onClick: () => jumpTo(val)

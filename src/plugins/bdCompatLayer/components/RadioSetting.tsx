@@ -21,12 +21,11 @@
 
 import { React, useMemo, useState } from "@webpack/common";
 
-export function RadioSettingComponent(props: {
+export function RadioSettingComponent(props: Readonly<{
     onChange: (value: any) => void;
     option: any;
-    pluginSettings: any;
     id: string;
-}) {
+}>) {
     const disabled = !!props.option?.disabled;
     const [selected, setSelected] = useState<any>(props.option?.value ?? null);
 
@@ -59,13 +58,8 @@ export function RadioSettingComponent(props: {
 
                     return (
                         <label
-                            key={i}
+                            key={String(opt.value)}
                             htmlFor={radioId}
-                            role="radio"
-                            aria-checked={checked}
-                            tabIndex={disabled ? -1 : 0}
-                            onKeyDown={e => { /* unchanged */ }}
-                            onClick={() => commit(opt.value)}
                             style={{
                                 position: "relative",
                                 display: "flex",

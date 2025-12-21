@@ -20,7 +20,8 @@
  */
 
 
-import { Button, React, useEffect, useMemo, useRef, useState } from "@webpack/common";
+import { Button } from "@components/Button";
+import { React, useEffect, useMemo, useRef, useState } from "@webpack/common";
 
 import { deleteKeybind, registerOrUpdateKeybind } from "../utils";
 
@@ -41,12 +42,11 @@ import { deleteKeybind, registerOrUpdateKeybind } from "../utils";
  *
  * NOTE: Execution (responding to keydown) is not here. Do that in plugin logic.
  */
-export function KeybindSettingComponent(props: {
+export function KeybindSettingComponent(props: Readonly<{
     onChange: (value: string[]) => void;
     option: any;
-    pluginSettings: any;
     id: string;
-}) {
+}>) {
     const disabled = !!props.option?.disabled;
     const maxKeys = Math.max(1, Number(props.option?.max ?? 4));
     const [recording, setRecording] = useState(false);
@@ -54,7 +54,7 @@ export function KeybindSettingComponent(props: {
         Array.isArray(props.option?.value) ? (props.option.value as string[]) : []
     );
     const comboRef = useRef<string[]>(combo);
-    const captureRef = useRef<HTMLDivElement | null>(null);
+    const captureRef = useRef<HTMLButtonElement | null>(null);
 
     // Small grace window so users can hit a normal key, then add modifiers.
     const commitTimer = useRef<number | null>(null);
@@ -62,7 +62,7 @@ export function KeybindSettingComponent(props: {
 
     // Prefer provided keybindId; fallback to component id
     const keybindId = useMemo(() => {
-        return (props.option?.keybindId || String(props.id)).replace(/\s+/g, "_");
+        return (props.option?.keybindId || String(props.id)).replaceAll(/\s+/g, "_");
     }, [props.option?.keybindId, props.id]);
 
     // Normalize pressed keys -> Discord tokens (lowercase)
@@ -145,9 +145,7 @@ export function KeybindSettingComponent(props: {
 
         const main = toToken(e.key);
 
-        if (!["ctrl", "alt", "shift", "cmd"].includes(main)) {
-            parts.push(main);
-        } else if (parts.length === 0) {
+        if (!["ctrl", "alt", "shift", "cmd"].includes(main) || parts.length === 0) {
             parts.push(main);
         }
 
@@ -194,7 +192,7 @@ export function KeybindSettingComponent(props: {
         deleteKeybind(keybindId);
     };
 
-    const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const onKeyDown = (e: React.KeyboardEvent<HTMLButtonElement>) => {
         if (!recording) return;
         e.preventDefault();
         e.stopPropagation();
@@ -214,7 +212,7 @@ export function KeybindSettingComponent(props: {
         }
     };
 
-    const onCaptureKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const onCaptureKeyDown = (e: React.KeyboardEvent<HTMLButtonElement>) => {
         if (!recording && (e.key === "Enter" || e.key === " ")) {
             e.preventDefault();
             startRecording();
@@ -247,8 +245,7 @@ export function KeybindSettingComponent(props: {
     const descId = `${props.id}-desc`;
 
     return (
-        <div
-            role="group"
+        <fieldset
             aria-labelledby={labelId}
             aria-describedby={descId}
             style={{
@@ -259,21 +256,23 @@ export function KeybindSettingComponent(props: {
                 padding: "4px 0",
                 opacity: disabled ? 0.5 : 1,
                 cursor: disabled ? "not-allowed" : "default",
-                color: "var(--text-default, #fff)"
+                color: "var(--text-default, #fff)",
+                border: "none",
+                margin: 0
             }}
         >
-            <div id={labelId} style={{ fontWeight: 600 }}>
+            <legend id={labelId} style={{ fontWeight: 600, padding: 0 }}>
                 {props.option?.label ?? "Keybind"}
-            </div>
+            </legend>
 
-            <div
+            <button
                 ref={captureRef}
-                tabIndex={disabled ? -1 : 0}
+                type="button"
                 onKeyDown={onCaptureKeyDown}
                 onClick={() => (recording ? undefined : startRecording())}
-                role="button"
-                aria-pressed={recording ? "true" : "false"}
+                aria-pressed={recording}
                 aria-label={recording ? "Recording. Press keys, or Escape to cancel." : "Start recording keybind"}
+                disabled={disabled}
                 style={{
                     display: "flex",
                     alignItems: "center",
@@ -281,24 +280,26 @@ export function KeybindSettingComponent(props: {
                     padding: "0 8px",
                     height: "36px",
                     borderRadius: "4px",
+                    border: "none",
                     outline: recording
                         ? "2px solid var(--status-danger, hsl(359,83%,59%))"
                         : "1px solid var(--border-strong, hsla(0,0%,100%,.3))",
                     background: "var(--background-mobile-secondary, hsla(0,0%,0%,.1))",
                     userSelect: "none",
-                    color: "inherit"
+                    color: "inherit",
+                    cursor: disabled ? "not-allowed" : "pointer"
                 }}
             >
                 <span style={{ fontWeight: 600, letterSpacing: ".02em", textTransform: "uppercase" }}>
                     {display || (recording ? "PRESS KEYS…" : "NO KEYBIND SET")}
                 </span>
-            </div>
+            </button>
 
             <div style={{ display: "flex", gap: "8px" }}>
                 <Button
                     onClick={() => (recording ? stopRecording(true) : startRecording())}
                     size="small"
-                    color={recording ? Button.Colors?.RED : Button.Colors?.PRIMARY}
+                    variant={recording ? "dangerPrimary" : "secondary"}
                     disabled={disabled}
                 >
                     {recording ? "Stop" : "Record"}
@@ -307,8 +308,7 @@ export function KeybindSettingComponent(props: {
                     <Button
                         onClick={e => clear(e)}
                         size="small"
-                        look={Button.Looks?.FILLED ?? "filled"}
-                        color={Button.Colors?.PRIMARY}
+                        variant="secondary"
                         disabled={disabled}
                     >
                         Clear
@@ -320,6 +320,6 @@ export function KeybindSettingComponent(props: {
                 Stored as capitalized key names for BD plugins (e.g. <code>['Ctrl','S']</code>). Press <kbd>Esc</kbd> to cancel while recording.
             </div>
 
-        </div>
+        </fieldset>
     );
 }

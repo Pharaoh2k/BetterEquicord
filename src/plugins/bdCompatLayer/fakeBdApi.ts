@@ -1855,7 +1855,6 @@ function _createSettingComponent(setting: any, categoryId: string | null, onChan
             fakeOption.component = p => React.createElement(KeybindSettingComponent, {
                 onChange: p.setValue,
                 option: setting,
-                pluginSettings: { enabled: true, [setting.id]: setting.value },
                 id: setting.id,
             });
             break;
@@ -1864,7 +1863,6 @@ function _createSettingComponent(setting: any, categoryId: string | null, onChan
             fakeOption.component = p => React.createElement(RadioSettingComponent, {
                 onChange: p.setValue,
                 option: setting,
-                pluginSettings: { enabled: true, [setting.id]: setting.value },
                 id: setting.id,
             });
             break;
