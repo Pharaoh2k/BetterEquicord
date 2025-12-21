@@ -3,7 +3,7 @@
  * Vencord, a modification for Discord's desktop app
  *
  * BD Compatibility Layer plugin for Vencord
- * Copyright (c) 2023-present Davvy and WhoIsThis
+ * Copyright (c) 2023-present Davilarek and WhoIsThis
  *
  * This file contains portions of code taken or derived from BetterDiscord
  * (https://github.com/BetterDiscord/BetterDiscord), licensed under the

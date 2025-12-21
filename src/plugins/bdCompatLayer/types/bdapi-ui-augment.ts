@@ -4,7 +4,7 @@
  * Copyright (c) 2022 Vendicated and contributors
  *
  * BD Compatibility Layer plugin
- * Copyright (c) 2023-2025 Davvy and WhoIsThis
+ * Copyright (c) 2023-2025 Davilarek and WhoIsThis
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -26,21 +26,21 @@
 
 // Ambient typing for BdApi.UI.showToast to accept both number and options object.
 
-export {};
+export { };
 
 declare global {
-  type BdToastType = "" | "info" | "success" | "warn" | "warning" | "error" | "danger";
+    type BdToastType = "" | "info" | "success" | "warn" | "warning" | "error" | "danger";
 
-  interface BdApiUICompat {
-    showToast(
-      message: string,
-      opts?: number | { type?: BdToastType; timeout?: number; forceShow?: boolean; icon?: boolean }
-    ): void;
-  }
+    interface BdApiUICompat {
+        showToast(
+            message: string,
+            opts?: number | { type?: BdToastType; timeout?: number; forceShow?: boolean; icon?: boolean; }
+        ): void;
+    }
 
-  interface BdApiCompatGlobal {
-    UI: BdApiUICompat;
-  }
+    interface BdApiCompatGlobal {
+        UI: BdApiUICompat;
+    }
 
-  const BdApi: BdApiCompatGlobal;
+    const BdApi: BdApiCompatGlobal;
 }

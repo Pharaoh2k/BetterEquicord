@@ -1,5 +1,4 @@
 /* eslint-disable simple-header/header */
-/* eslint-disable simple-header/header */
 /*
  * Vencord, a modification for Discord's desktop app
  *
@@ -54,7 +53,7 @@ export interface SliderProps {
     max: number;
     step?: number;
     units?: string;
-    markers?: Array<number | { value: number; label?: string }>;
+    markers?: Array<number | { value: number; label?: string; }>;
     onChange: (v: number) => void;
     disabled?: boolean;
 }

@@ -3,7 +3,7 @@
  * Vencord, a modification for Discord's desktop app
  *
  * BD Compatibility Layer plugin for Vencord
- * Copyright (c) 2023-present Davvy and WhoIsThis
+ * Copyright (c) 2023-present Davilarek and WhoIsThis
  * Copyright (c) 2025 Pharaoh2k
  *
  * This file contains portions of code derived from BetterDiscord
@@ -59,13 +59,13 @@ function getContrastColor(hex: string): string {
     const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
     return luma >= 128 ? "#000" : "#fff";
 }
-function CheckIcon({ color }: { color: string }) {
+function CheckIcon({ color }: { color: string; }) {
     const { React } = getGlobalApi();
     return React.createElement("svg", { width: 16, height: 16, viewBox: "0 0 24 24", fill: "none", stroke: color, strokeWidth: 3 },
         React.createElement("polyline", { points: "20 6 9 17 4 12" })
     );
 }
-function PipetteIcon({ color }: { color: string }) {
+function PipetteIcon({ color }: { color: string; }) {
     const { React } = getGlobalApi();
     return React.createElement("svg", {
         width: 14,

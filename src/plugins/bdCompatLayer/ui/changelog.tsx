@@ -39,9 +39,9 @@ export interface ChangelogProps {
     title: string;
     subtitle?: string;
     blurb?: string;
-    banner?: string;  // image URL
-    video?: string;   // youtube or direct video
-    poster?: string;  // for <video>
+    banner?: string; // image URL
+    video?: string; // youtube or direct video
+    poster?: string; // for <video>
     footer?: any | any[]; // ReactNode|string
     changes?: ChangeSection[];
     closeText?: string;
@@ -85,10 +85,10 @@ function escapeHtml(s: string) {
     return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 function mdInline(s: string) {
-    s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, `<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>`);
-    s = s.replace(/`([^`]+)`/g, `<code>$1</code>`);
-    s = s.replace(/\*\*([^*]+)\*\*/g, `<strong>$1</strong>`);
-    s = s.replace(/\*([^*\n]+)\*/g, `<em>$1</em>`);
+    s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, "<a href=\"$2\" target=\"_blank\" rel=\"noopener noreferrer\">$1</a>");
+    s = s.replace(/`([^`]+)`/g, "<code>$1</code>");
+    s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    s = s.replace(/\*([^*\n]+)\*/g, "<em>$1</em>");
     return s;
 }
 function markdownToHtml(s?: string) {
@@ -113,7 +113,7 @@ const TYPE_META = {
     improved: { label: "Improved", emoji: "🚀", className: "improved" },
 } as const;
 
-const registry = new Map<string, { host: HTMLElement; root: any; onKey: (e: KeyboardEvent) => void }>();
+const registry = new Map<string, { host: HTMLElement; root: any; onKey: (e: KeyboardEvent) => void; }>();
 
 export function showChangelogModal(options: ChangelogProps): string {
     ensureStyles();
@@ -131,8 +131,8 @@ export function showChangelogModal(options: ChangelogProps): string {
 
     const onRequestClose = () => closeChangelogModal(key);
 
-    const HTML = ({ html }: { html: string }) => React.createElement("span", { className: "bd-cl-md", dangerouslySetInnerHTML: { __html: html } });
-    const Section = ({ section }: { section: ChangeSection }) => {
+    const HTML = ({ html }: { html: string; }) => React.createElement("span", { className: "bd-cl-md", dangerouslySetInnerHTML: { __html: html } });
+    const Section = ({ section }: { section: ChangeSection; }) => {
         const meta = (TYPE_META as any)[section.type] || TYPE_META.added;
         return React.createElement("section", { className: `bd-cl-section ${meta.className}`, "aria-label": `${meta.label} Section` },
             React.createElement("h4", { className: "bd-cl-section-title" },

@@ -3,7 +3,7 @@
  * Vencord, a modification for Discord's desktop app
  *
  * BD Compatibility Layer plugin for Vencord
- * Copyright (c) 2023-present Davvy and WhoIsThis
+ * Copyright (c) 2023-present Davilarek and WhoIsThis
  * Copyright (c) 2025 Pharaoh2k
  *
  * This file contains portions of code derived from BetterDiscord
@@ -28,17 +28,18 @@
  *
  * SPDX-License-Identifier: GPL-3.0-only
  */
-//TLH
+
 import { showNotification as VencordShowNotification } from "@api/Notifications";
 import { Settings } from "@api/Settings";
 const VenComponents = OptionComponentMap;
 // type-only import to pull in the augmentation (erased at runtime)
 import "./types/bdapi-ui-augment";
+
 import * as VencordCommands from "@api/Commands";
-import ErrorBoundary from "@components/ErrorBoundary";
 import { OptionComponentMap } from "@components/settings/tabs/plugins/components";
 import { OptionType } from "@utils/types";
 import { Forms, lodash, Text } from "@webpack/common";
+
 import { ColorPickerSettingComponent } from "./components/ColorPickerSetting";
 import { KeybindSettingComponent } from "./components/KeybindSetting";
 import { RadioSettingComponent } from "./components/RadioSetting";
@@ -217,7 +218,7 @@ function getReactComponentType(component: any): any {
             } else {
                 // Not resolved yet, return a no-op function
                 // This matches BD's behavior
-                return () => {};
+                return () => { };
             }
         } else {
             // Not a wrapper type we recognize, return as-is
@@ -250,14 +251,14 @@ const patchedReactHooks: Record<string, (...args: any[]) => any> = {
         if (typeof initialState === "function") {
             initialState = initialState();
         }
-        return [initialState, () => {}];
+        return [initialState, () => { }];
     },
     useReducer(reducer: any, initialArg: any, init?: (arg: any) => any) {
         const initialState = init ? init(initialArg) : initialArg;
-        return [initialState, () => {}];
+        return [initialState, () => { }];
     },
-    useEffect() {},
-    useLayoutEffect() {},
+    useEffect() { },
+    useLayoutEffect() { },
     useRef(initialValue: any) {
         return { current: initialValue };
     },
@@ -267,8 +268,8 @@ const patchedReactHooks: Record<string, (...args: any[]) => any> = {
     useContext(context: any) {
         return context._currentValue;
     },
-    useImperativeHandle() {},
-    useDebugValue() {},
+    useImperativeHandle() { },
+    useDebugValue() { },
     useDeferredValue(value: any) {
         return value;
     },
@@ -281,7 +282,7 @@ const patchedReactHooks: Record<string, (...args: any[]) => any> = {
     useSyncExternalStore(_subscribe: any, getSnapshot: () => any) {
         return getSnapshot();
     },
-    useInsertionEffect() {},
+    useInsertionEffect() { },
 };
 
 function resolvePluginByAny(idOrFile: string): AssembledBetterDiscordPlugin | undefined {
@@ -1588,7 +1589,7 @@ export const HooksHolder = {
         return Vencord.Util.useForceUpdater();
     },
     useData<T>(pluginName: string, key: string): T | undefined {
-        const React = getGlobalApi().React;
+        const { React } = getGlobalApi();
         const [, forceUpdate] = React.useReducer((x: number) => x + 1, 0);
         React.useEffect(() => {
             const unsubscribe = subscribeToData(pluginName, key, forceUpdate);
@@ -2981,7 +2982,7 @@ class BdApiReImplementationInstance {
                     filter?: (inst: any) => boolean;
                 } = {}
             ) {
-                const include = opt.include;
+                const { include } = opt;
                 const exclude = opt.exclude ?? (opt.include ? undefined : ["Popout", "Tooltip", "Scroller", "BackgroundFlash"]);
                 const filter = opt.filter ?? ((_: any) => true);
                 const targetList = include ?? exclude;
