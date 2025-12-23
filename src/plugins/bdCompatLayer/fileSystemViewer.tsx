@@ -30,7 +30,7 @@ import SettingsPlugin from "@plugins/_core/settings";
 import { classNameFactory } from "@utils/css";
 import { ModalRoot, ModalSize, openModal } from "@utils/modal";
 import { Plugin } from "@utils/types";
-import { hljs, Parser, React, ScrollerThin, TabBar, TextInput, Tooltip, useEffect, useMemo, useReducer, useRef, useState } from "@webpack/common"; // using Paragraph in Equicord, instead of Forms
+import { hljs, Parser, React, ScrollerThin, TabBar, TextInput, Tooltip, useEffect, useMemo, useReducer, useRef, useState } from "@webpack/common";
 
 import { PLUGIN_NAME } from "./constants";
 import { getGlobalApi } from "./fakeBdApi";
