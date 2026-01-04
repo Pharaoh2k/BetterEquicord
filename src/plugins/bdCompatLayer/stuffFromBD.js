@@ -227,11 +227,17 @@ function getModule(filter, options = {}) {
         const { exports } = module;
         if (shouldSkipModule(exports)) continue;
         if (typeof (exports) === "object" && searchExports && !exports.TypedArray) {
+            if (wrappedFilter(exports, module, index)) {
+                let foundModule = raw ? module : exports;
+                if (first) return foundModule;
+                rm.push(foundModule);
+            }
             for (const key in exports) {
                 let foundModule = null;
                 let wrappedExport = null;
                 try { wrappedExport = exports[key]; } catch { continue; }
                 if (!wrappedExport) continue;
+                if (typeof wrappedExport !== "object" && typeof wrappedExport !== "function") continue;
                 if (wrappedFilter(wrappedExport, module, index)) foundModule = wrappedExport;
                 if (!foundModule) continue;
                 if (raw) foundModule = module;
