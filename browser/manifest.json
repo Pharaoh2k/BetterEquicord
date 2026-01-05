@@ -10,8 +10,13 @@
     },
     "host_permissions": [
         "*://*.discord.com/*",
-        "https://raw.githubusercontent.com/*"
+        "https://raw.githubusercontent.com/*",
+        "https://cdn.discordapp.com/*",
+        "https://media.discordapp.net/*"
     ],
+    "background": {
+        "service_worker": "background.js"
+    },
     "permissions": [
         "declarativeNetRequest"
     ],

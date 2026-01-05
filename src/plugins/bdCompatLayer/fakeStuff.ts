@@ -88,6 +88,36 @@ export const addContextMenu = async (DiscordModules: any, _proxyUrl: string) => 
     };
 };
 
+async function tryExtensionFetch(url: string): Promise<Response | null> {
+    // Only works in browser extension context
+    if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) {
+        return null;
+    }
+
+    try {
+        const result = await new Promise<any>(resolve => {
+            chrome.runtime.sendMessage({ type: "EQUICORD_CORS_FETCH", url }, resolve);
+        });
+
+        if (!result || result.error) {
+            return null;
+        }
+
+        const binary = atob(result.body);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) {
+            bytes[i] = binary.charCodeAt(i);
+        }
+
+        return new Response(bytes, {
+            status: result.status,
+            statusText: result.ok ? "OK" : "Error",
+        });
+    } catch {
+        return null;
+    }
+}
+
 async function tryNativeFetch(url: string): Promise<Response | null> {
     try {
         const result = await Native.corsFetch(url);
@@ -130,7 +160,7 @@ export async function fetchWithCorsProxyFallback(url: string, corsProxy: string,
     const isGet = options.method === undefined || options.method?.toLowerCase() === "get";
     const useNativeFirst = isGet && shouldUseNativeFetch(url);
 
-    // Method 1: Try native IPC fetch first for Discord CDN URLs
+    // Method 1: Try native IPC fetch first for Discord CDN URLs (Electron)
     if (useNativeFirst) {
         try {
             compat_logger.debug(`[${reqId}] Requesting ${url} via native IPC...`, options);
@@ -141,6 +171,18 @@ export async function fetchWithCorsProxyFallback(url: string, corsProxy: string,
             }
         } catch (error) {
             compat_logger.debug(`[${reqId}] (Native IPC) Failed.`);
+        }
+
+        // Try extension background fetch (Chrome extension)
+        try {
+            compat_logger.debug(`[${reqId}] Trying extension fetch...`);
+            const result = await tryExtensionFetch(url);
+            if (result) {
+                compat_logger.debug(`[${reqId}] (Extension) Success.`);
+                return result;
+            }
+        } catch (error) {
+            compat_logger.debug(`[${reqId}] (Extension) Failed.`);
         }
     }
 
