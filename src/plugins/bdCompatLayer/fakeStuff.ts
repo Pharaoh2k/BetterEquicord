@@ -31,6 +31,9 @@
 
 import { createContextMenu } from "./bdModules/contextmenu";
 import { createDiscordModules } from "./bdModules/discordmodules";
+const Native = VencordNative.pluginHelpers["BD Compatibility Layer"] as {
+    corsFetch: (url: string) => Promise<{ ok: boolean; status: number; body: string; } | { error: string; }>;
+};
 import { compat_logger } from "./utils";
 
 export { Patcher } from "./stuffFromBD";
@@ -85,26 +88,99 @@ export const addContextMenu = async (DiscordModules: any, _proxyUrl: string) => 
     };
 };
 
+async function tryNativeFetch(url: string): Promise<Response | null> {
+    try {
+        const result = await Native.corsFetch(url);
+
+        if ("error" in result) {
+            return null;
+        }
+
+        const binary = atob(result.body);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) {
+            bytes[i] = binary.charCodeAt(i);
+        }
+
+        return new Response(bytes, {
+            status: result.status,
+            statusText: result.ok ? "OK" : "Error",
+        });
+    } catch {
+        return null;
+    }
+}
+
+const NATIVE_FETCH_DOMAINS = [
+    "cdn.discordapp.com",
+    "media.discordapp.net",
+];
+
+function shouldUseNativeFetch(url: string): boolean {
+    try {
+        const parsed = new URL(url);
+        return NATIVE_FETCH_DOMAINS.some(d => parsed.hostname === d);
+    } catch {
+        return false;
+    }
+}
+
 export async function fetchWithCorsProxyFallback(url: string, corsProxy: string, options: any = {}) {
     const reqId = (Date.now().toString(36) + Math.random().toString(36).slice(2, 6));
+    const isGet = options.method === undefined || options.method?.toLowerCase() === "get";
+    const useNativeFirst = isGet && shouldUseNativeFetch(url);
+
+    // Method 1: Try native IPC fetch first for Discord CDN URLs
+    if (useNativeFirst) {
+        try {
+            compat_logger.debug(`[${reqId}] Requesting ${url} via native IPC...`, options);
+            const result = await tryNativeFetch(url);
+            if (result) {
+                compat_logger.debug(`[${reqId}] (Native IPC) Success.`);
+                return result;
+            }
+        } catch (error) {
+            compat_logger.debug(`[${reqId}] (Native IPC) Failed.`);
+        }
+    }
+
+    // Method 2: Try direct fetch
     try {
         compat_logger.debug(`[${reqId}] Requesting ${url}...`, options);
         const result = await fetch(url, options);
         compat_logger.debug(`[${reqId}] Success.`);
         return result;
     } catch (error) {
-        if (options.method === undefined || options.method === "get") {
-            compat_logger.debug(`[${reqId}] Failed, trying with proxy.`);
-            try {
-                const result = await fetch(`${corsProxy}${url}`, options);
-                compat_logger.debug(`[${reqId}] (Proxy) Success.`);
-                return result;
-            } catch (error) {
-                compat_logger.debug(`[${reqId}] (Proxy) Failed completely.`);
-                throw error;
-            }
-        }
-        compat_logger.debug(`[${reqId}] Failed completely.`);
-        throw error;
+        compat_logger.debug(`[${reqId}] Direct fetch failed.`);
     }
+
+    // Method 3: Try native IPC fetch if not already tried
+    if (isGet && !useNativeFirst) {
+        try {
+            compat_logger.debug(`[${reqId}] Trying native IPC fetch...`);
+            const result = await tryNativeFetch(url);
+            if (result) {
+                compat_logger.debug(`[${reqId}] (Native IPC) Success.`);
+                return result;
+            }
+            compat_logger.debug(`[${reqId}] (Native IPC) Not available.`);
+        } catch (error) {
+            compat_logger.debug(`[${reqId}] (Native IPC) Failed.`);
+        }
+    }
+
+    // Method 4: Fall back to CORS proxy
+    if (isGet && corsProxy) {
+        compat_logger.debug(`[${reqId}] Trying CORS proxy...`);
+        try {
+            const result = await fetch(`${corsProxy}${url}`, options);
+            compat_logger.debug(`[${reqId}] (Proxy) Success.`);
+            return result;
+        } catch (error) {
+            compat_logger.debug(`[${reqId}] (Proxy) Failed.`);
+        }
+    }
+
+    compat_logger.debug(`[${reqId}] All methods failed.`);
+    throw new Error("All fetch methods failed");
 }

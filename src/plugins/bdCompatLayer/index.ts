@@ -304,7 +304,8 @@ export default definePlugin({
                 _Router ??= BdApiReImplementation.Webpack.getModule(x => x.listeners && x.flushRoute);
                 return _Router as null | { listeners: Set<Function>; };
             },
-            fakeClipboard: undefined,
+            fakeClipboard: undefined as any,
+            fakeFileManager: undefined as any,
             wrapPluginCode: (code: string, filename = "RuntimeGenerated.plugin.js") => { return convertPlugin(code, filename, false); },
             queuedPlugins: [],
         };
@@ -517,6 +518,31 @@ export default definePlugin({
                 copy: copyToClipboard,
             };
         })();
+
+        windowBdCompatLayer.fakeFileManager = {
+            saveWithDialog: (data: any, filename: string) => {
+                const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+                const blob = new Blob([bytes.buffer], { type: "application/octet-stream" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                return Promise.resolve();
+            }
+        };
+
+        // Ensure DiscordNative.fileManager is available
+        const DN = (window.DiscordNative || (window.DiscordNative = {})) as any;
+        if (!DN.fileManager) {
+            Object.defineProperty(DN, "fileManager", {
+                configurable: true,
+                get: () => windowBdCompatLayer.fakeFileManager
+            });
+        }
         const injectedAndPatched = new Promise<void>((resolve, reject) => {
             ReactUtils_filler.setup({ React: React });
             addDiscordModules(proxyUrl).then(DiscordModulesInjectorOutput => {
