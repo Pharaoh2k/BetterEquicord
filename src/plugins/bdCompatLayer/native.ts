@@ -5,6 +5,7 @@
  */
 
 import { net } from "electron";
+import { homedir } from "os";
 
 const ALLOWED_FETCH_DOMAINS = [
     "cdn.discordapp.com",
@@ -12,8 +13,6 @@ const ALLOWED_FETCH_DOMAINS = [
 ];
 
 export async function corsFetch(_event: unknown, url: string): Promise<{ ok: boolean; status: number; body: string; } | { error: string; }> {
-    console.log("[BD Compat] corsFetch called with:", typeof url, url);
-
     if (!url || typeof url !== "string") {
         return { error: `Invalid URL type: ${typeof url}` };
     }
@@ -21,9 +20,7 @@ export async function corsFetch(_event: unknown, url: string): Promise<{ ok: boo
     let parsed: URL;
     try {
         parsed = new URL(url);
-        console.log("[BD Compat] URL parsed successfully:", parsed.hostname);
     } catch (e) {
-        console.log("[BD Compat] URL parse error:", e);
         return { error: `Invalid URL: ${e}` };
     }
 
@@ -36,18 +33,32 @@ export async function corsFetch(_event: unknown, url: string): Promise<{ ok: boo
     }
 
     try {
-        console.log("[BD Compat] Fetching via net.fetch...");
         const response = await net.fetch(url);
-        console.log("[BD Compat] Response status:", response.status);
         const buffer = await response.arrayBuffer();
-        console.log("[BD Compat] Buffer size:", buffer.byteLength);
         return {
             ok: response.ok,
             status: response.status,
             body: Buffer.from(buffer).toString("base64")
         };
     } catch (err) {
-        console.log("[BD Compat] Fetch error:", err);
         return { error: String(err) };
     }
+}
+
+export async function unsafe_req(_event: unknown): Promise<(moduleName: string) => Promise<any>> {
+    return async (moduleName: string) => {
+        // This is intentionally limited - only used when reallyUsePoorlyMadeRealFs is true
+        switch (moduleName) {
+            case "fs":
+                return await import("fs");
+            case "path":
+                return await import("path");
+            default:
+                throw new Error(`Module not allowed: ${moduleName}`);
+        }
+    };
+}
+
+export async function getUserHome(_event: unknown): Promise<string> {
+    return homedir();
 }
