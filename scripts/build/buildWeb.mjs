@@ -167,7 +167,8 @@ async function buildExtension(target, files) {
             }
 
             return [
-                f.startsWith("manifest") ? "manifest.json" : f,
+                f.startsWith("manifest") ? "manifest.json" :
+                    f === "background-chrome.js" ? "background.js" : f,
                 content
             ];
         })))
@@ -193,7 +194,7 @@ const appendCssRuntime = readFile("dist/Equicord.user.css", "utf-8").then(conten
 if (!process.argv.includes("--skip-extension")) {
     await Promise.all([
         appendCssRuntime,
-        buildExtension("chromium-unpacked", ["modifyResponseHeaders.json", "content.js", "manifest.json", "icon.png"]),
+        buildExtension("chromium-unpacked", ["modifyResponseHeaders.json", "content.js", "manifest.json", "icon.png", "background-chrome.js"]),
         buildExtension("firefox-unpacked", ["background.js", "content.js", "manifestv2.json", "icon.png"]),
     ]);
 

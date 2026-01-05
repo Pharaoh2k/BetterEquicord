@@ -89,14 +89,36 @@ export const addContextMenu = async (DiscordModules: any, _proxyUrl: string) => 
 };
 
 async function tryExtensionFetch(url: string): Promise<Response | null> {
-    // Only works in browser extension context
-    if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) {
+    // Only works in browser extension context (communicates via window.postMessage)
+    if (typeof window === "undefined") {
         return null;
     }
 
     try {
-        const result = await new Promise<any>(resolve => {
-            chrome.runtime.sendMessage({ type: "EQUICORD_CORS_FETCH", url }, resolve);
+        const requestId = Math.random().toString(36).slice(2);
+
+        const result = await new Promise<any>((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                window.removeEventListener("message", handler);
+                reject(new Error("Extension fetch timeout"));
+            }, 30000);
+
+            const handler = (event: MessageEvent) => {
+                if (event.source !== window) return;
+                if (event.data?.type !== "EQUICORD_CORS_FETCH_RESPONSE") return;
+                if (event.data?.requestId !== requestId) return;
+
+                clearTimeout(timeout);
+                window.removeEventListener("message", handler);
+                resolve(event.data.response);
+            };
+
+            window.addEventListener("message", handler);
+            window.postMessage({
+                type: "EQUICORD_CORS_FETCH_REQUEST",
+                url: url,
+                requestId: requestId
+            }, "*");
         });
 
         if (!result || result.error) {
