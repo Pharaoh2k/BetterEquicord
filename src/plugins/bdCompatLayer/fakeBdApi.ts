@@ -4,7 +4,7 @@
  *
  * BD Compatibility Layer plugin for Vencord
  * Copyright (c) 2023-present Davilarek and WhoIsThis
- * Copyright (c) 2025 Pharaoh2k
+ * Copyright (c) 2025-present Pharaoh2k
  *
  * This file contains portions of code derived from BetterDiscord
  * (https://github.com/BetterDiscord/BetterDiscord), licensed under the
@@ -52,7 +52,39 @@ import { fetchWithCorsProxyFallback } from "./fakeStuff";
 import { addCustomPlugin, AssembledBetterDiscordPlugin, convertPlugin } from "./pluginConstructor";
 import { getModule as BdApi_getModule, monkeyPatch as BdApi_monkeyPatch, Patcher, ReactUtils_filler } from "./stuffFromBD";
 import { showChangelogModal as _showChangelogModal } from "./ui/changelog";
-import { addLogger, compat_logger, createTextForm, docCreateElement, ObjectMerger } from "./utils";
+import { addLogger, compat_logger, createTextForm, docCreateElement, ObjectMerger, openFileSelect } from "./utils";
+interface BdDialogOptions {
+    mode?: "open" | "save";
+    defaultPath?: string;
+    filters?: Array<{ name: string; extensions: string[]; }>;
+    title?: string;
+    message?: string;
+    showOverwriteConfirmation?: boolean;
+    showHiddenFiles?: boolean;
+    promptToCreate?: boolean;
+    openDirectory?: boolean;
+    openFile?: boolean;
+    multiSelections?: boolean;
+    modal?: boolean;
+}
+
+interface BdDialogResult {
+    canceled: boolean;
+    filePath?: string;
+    filePaths?: string[];
+}
+
+type BdCompatNatives = {
+    corsFetch: (url: string) => Promise<{ ok: boolean; status: number; body: string; } | { error: string; }>;
+    openDialog: (options: BdDialogOptions) => Promise<BdDialogResult | { error: string; }>;
+    unsafe_req: () => Promise<(moduleName: string) => Promise<any>>;
+    getUserHome: () => Promise<string>;
+    getSystemTempDir: () => Promise<string>;
+};
+
+const getNative = (): BdCompatNatives | undefined => {
+    return VencordNative.pluginHelpers["BD Compatibility Layer"] as BdCompatNatives | undefined;
+};
 class PatcherWrapper {
     readonly #label;
     constructor(label) {
@@ -2331,6 +2363,64 @@ export const UIHolder = {
     },
     showConfirmationModal(title: string, content: any, settings: any = {}) {
         return BD_CM_open(title, content, settings);
+    },
+    /**
+ * Gives access to the Electron Dialog API.
+ * Returns a Promise that resolves to an object with canceled boolean,
+ * filePath string for saving, and filePaths string array for opening.
+ *
+ * @param options Options object to configure the dialog
+ * @param options.mode "open" for file picking, "save" for saving a file
+ * @param options.defaultPath Starting directory or save path
+ * @param options.filters Extensions to restrict allowed files
+ * @param options.title Title of the dialog
+ * @param options.message Message/description for the dialog
+ * @param options.showOverwriteConfirmation Show overwrite confirmation when saving
+ * @param options.showHiddenFiles Show hidden files in dialog
+ * @param options.promptToCreate Prompt to create non-existent directory/file
+ * @param options.openDirectory Allow directory selection
+ * @param options.openFile Allow file selection
+ * @param options.multiSelections Allow multiple selections
+ * @param options.modal Make dialog modal to Discord window
+ */
+    async openDialog(options: BdDialogOptions = {}): Promise<BdDialogResult> {
+        const Native = getNative();
+
+        if (!Native?.openDialog) {
+            compat_logger.warn("openDialog: Native module unavailable (browser environment?)");
+
+            // DOM fallback only works for "open" mode
+            if (options.mode === "save") {
+                throw new Error("Save dialogs require Electron environment");
+            }
+
+            let accept = "*";
+            if (options.filters?.length) {
+                accept = options.filters
+                    .flatMap(f => f.extensions.map(ext => ext === "*" ? "*" : `.${ext}`))
+                    .join(",");
+            }
+
+            const multiple = options.multiSelections ?? false;
+
+            try {
+                const files = await openFileSelect(accept, multiple);
+                const fileArray = Array.isArray(files) ? files : [files];
+                return {
+                    canceled: false,
+                    filePath: fileArray[0]?.name,
+                    filePaths: fileArray.map(f => f.name)
+                };
+            } catch {
+                return { canceled: true, filePaths: [] };
+            }
+        }
+
+        const data = await Native.openDialog(options);
+        if ("error" in data) {
+            throw new Error(data.error);
+        }
+        return data;
     },
     closeConfirmationModal(key: string) { BD_CM_close(key); },
     closeAllConfirmationModals() { BD_CM_closeAll(); },

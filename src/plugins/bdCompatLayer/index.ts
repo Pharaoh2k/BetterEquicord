@@ -174,6 +174,34 @@ export default definePlugin({
             restartNeeded: true,
         }
     },
+
+    /**
+     * Detects if a path is a "real" filesystem path vs a virtual ZenFS path.
+     * Real paths: C:\..., D:\..., /Users/..., /home/username/..., etc.
+     * Virtual paths: /BD/..., /tmp/..., /home/fake/...
+     */
+    isRealFsPath(p: string): boolean {
+        if (!p || typeof p !== "string") return false;
+
+        // Windows absolute path (C:\, D:\, etc.)
+        if (/^[A-Za-z]:[/\\]/.test(p)) return true;
+
+        // Windows UNC path (\\server\share)
+        if (p.startsWith("\\\\")) return true;
+
+        // macOS typical paths
+        if (p.startsWith("/Users/")) return true;
+        if (p.startsWith("/Applications/")) return true;
+        if (p.startsWith("/Volumes/")) return true;
+
+        // Linux paths (but not our virtual paths)
+        if (p.startsWith("/home/") && !p.startsWith("/home/fake")) return true;
+        if (p.startsWith("/root/")) return true;
+        if (p.startsWith("/opt/")) return true;
+
+        return false;
+    },
+
     start() {
         injectSettingsTabs();
         const reimplementationsReady = getDeferred<void>();
@@ -278,7 +306,7 @@ export default definePlugin({
                     ZenFs.configureSingle(target.browserFSSetting).then(
                         async () => {
                             if (target.client && target.client instanceof zen.RealFSClient) await target.client.ready;
-                            ReImplementationObject.fs = ZenFs.fs;
+                            ReImplementationObject.fs = wrapFsWithRealFsSupport(ZenFs.fs);
                             const path = await (await fetch("https://cdn.jsdelivr.net/npm/path-browserify@1.0.1/index.js")).text();
                             const result = eval.call(window, "(()=>{const module = {};" + path + "return module.exports;})();\n//# sourceURL=betterDiscord://internal/path.js");
                             ReImplementationObject.path = result;
@@ -311,9 +339,417 @@ export default definePlugin({
         };
         window.BdCompatLayer = windowBdCompatLayer;
         window.GeneratedPlugins = [];
+        let cachedTempDir: string | null = null;
+
+        // ============================================
+        // Hybrid FS Wrapper - routes real paths to native IPC
+        // ============================================
+
+        const getNative = () => VencordNative.pluginHelpers["BD Compatibility Layer"] as any;
+
+        /**
+         * Creates a WriteStream-like object that writes to real filesystem via native IPC.
+         */
+        const createRealFsWriteStream = (filePath: string, options: any) => {
+            const streamId = `ws_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+            let initialized = false;
+            let initPromise: Promise<boolean> | null = null;
+            let destroyed = false;
+            let error: Error | null = null;
+
+            const eventHandlers: Record<string, Function[]> = {
+                error: [],
+                finish: [],
+                drain: [],
+                close: []
+            };
+
+            const emit = (event: string, ...args: any[]) => {
+                eventHandlers[event]?.forEach(fn => {
+                    try { fn(...args); } catch (e) { compat_logger.error("Stream event handler error:", e); }
+                });
+            };
+
+            const ensureInit = async (): Promise<boolean> => {
+                if (destroyed) return false;
+                if (initialized) return true;
+                if (!initPromise) {
+                    initPromise = (async () => {
+                        const native = getNative();
+                        if (!native?.realCreateWriteStream) {
+                            error = new Error("Native realCreateWriteStream not available");
+                            return false;
+                        }
+                        const result = await native.realCreateWriteStream(filePath, streamId, options);
+                        if (!result.success) {
+                            error = new Error(result.error || "Failed to create write stream");
+                            return false;
+                        }
+                        initialized = true;
+                        return true;
+                    })();
+                }
+                return initPromise;
+            };
+
+            const stream = {
+                write(chunk: Uint8Array | ArrayBuffer, encodingOrCallback?: string | ((err?: Error) => void), callback?: (err?: Error) => void): boolean {
+                    let cb: ((err?: Error) => void) | undefined;
+                    if (typeof encodingOrCallback === "function") {
+                        cb = encodingOrCallback;
+                    } else if (typeof callback === "function") {
+                        cb = callback;
+                    }
+
+                    if (destroyed) {
+                        const err = new Error("Stream destroyed");
+                        if (cb) cb(err);
+                        return false;
+                    }
+
+                    const arr = chunk instanceof Uint8Array ? Array.from(chunk) :
+                        chunk instanceof ArrayBuffer ? Array.from(new Uint8Array(chunk)) :
+                            Array.from(new Uint8Array(chunk as any));
+
+                    ensureInit().then(async ok => {
+                        if (!ok || destroyed) {
+                            if (cb) cb(error || new Error("Stream not ready"));
+                            return;
+                        }
+                        try {
+                            const native = getNative();
+                            const result = await native.realStreamWrite(streamId, arr);
+                            if (!result.success) {
+                                const err = new Error(result.error);
+                                error = err;
+                                if (cb) cb(err);
+                                emit("error", err);
+                            } else {
+                                if (cb) cb();
+                            }
+                        } catch (e) {
+                            const err = e instanceof Error ? e : new Error(String(e));
+                            if (cb) cb(err);
+                            emit("error", err);
+                        }
+                    });
+
+                    return true;
+                },
+
+                end(chunkOrCallback?: Uint8Array | ArrayBuffer | (() => void), encodingOrCallback?: string | (() => void), callback?: () => void): void {
+                    let finalCb: (() => void) | undefined;
+                    let finalChunk: Uint8Array | ArrayBuffer | undefined;
+
+                    if (typeof chunkOrCallback === "function") {
+                        finalCb = chunkOrCallback;
+                    } else if (chunkOrCallback) {
+                        finalChunk = chunkOrCallback;
+                        if (typeof encodingOrCallback === "function") {
+                            finalCb = encodingOrCallback;
+                        } else if (typeof callback === "function") {
+                            finalCb = callback;
+                        }
+                    } else if (typeof encodingOrCallback === "function") {
+                        finalCb = encodingOrCallback;
+                    } else if (typeof callback === "function") {
+                        finalCb = callback;
+                    }
+
+                    const doEnd = async () => {
+                        const ok = await ensureInit();
+                        if (!ok || destroyed) {
+                            if (finalCb) finalCb();
+                            emit("finish");
+                            emit("close");
+                            return;
+                        }
+
+                        try {
+                            if (finalChunk) {
+                                const arr = finalChunk instanceof Uint8Array ? Array.from(finalChunk) :
+                                    Array.from(new Uint8Array(finalChunk));
+                                const native = getNative();
+                                await native.realStreamWrite(streamId, arr);
+                            }
+
+                            const native = getNative();
+                            await native.realStreamEnd(streamId);
+                            destroyed = true;
+                            if (finalCb) finalCb();
+                            emit("finish");
+                            emit("close");
+                        } catch (e) {
+                            emit("error", e);
+                            if (finalCb) finalCb();
+                        }
+                    };
+
+                    doEnd();
+                },
+
+                destroy(err?: Error): void {
+                    if (destroyed) return;
+                    destroyed = true;
+                    if (err) error = err;
+
+                    getNative()?.realStreamDestroy?.(streamId).catch(() => { });
+
+                    if (err) emit("error", err);
+                    emit("close");
+                },
+
+                on(event: string, handler: Function) {
+                    if (!eventHandlers[event]) eventHandlers[event] = [];
+                    eventHandlers[event].push(handler);
+                    return stream;
+                },
+
+                once(event: string, handler: Function) {
+                    const wrapper = (...args: any[]) => {
+                        stream.off(event, wrapper);
+                        handler(...args);
+                    };
+                    return stream.on(event, wrapper);
+                },
+
+                off(event: string, handler: Function) {
+                    const handlers = eventHandlers[event];
+                    if (handlers) {
+                        const idx = handlers.indexOf(handler);
+                        if (idx >= 0) handlers.splice(idx, 1);
+                    }
+                    return stream;
+                },
+
+                removeListener(event: string, handler: Function) {
+                    return stream.off(event, handler);
+                },
+
+                writable: true,
+                destroyed: false,
+
+                get writableEnded() { return destroyed; },
+                get writableFinished() { return destroyed; }
+            };
+
+            ensureInit();
+
+            return stream;
+        };
+
+        /**
+         * Wraps ZenFS with real filesystem support for real paths.
+         */
+        const wrapFsWithRealFsSupport = (virtualFs: any) => {
+            const isReal = (p: string) => this.isRealFsPath(p);
+
+            return new Proxy(virtualFs, {
+                get(target, prop: string) {
+                    const original = target[prop];
+
+                    switch (prop) {
+                        case "mkdirSync":
+                            return function (dirPath: string, options?: any) {
+                                if (isReal(dirPath)) {
+                                    getNative()?.realMkdirSync?.(dirPath, options)
+                                        .catch((e: any) => compat_logger.error("realMkdirSync failed:", e));
+                                    return undefined;
+                                }
+                                return original.call(target, dirPath, options);
+                            };
+
+                        case "writeFileSync":
+                            return function (filePath: string, data: any, options?: any) {
+                                if (isReal(filePath)) {
+                                    const arr = data instanceof Uint8Array ? Array.from(data) :
+                                        data instanceof ArrayBuffer ? Array.from(new Uint8Array(data)) :
+                                            typeof data === "string" ? Array.from(new TextEncoder().encode(data)) :
+                                                Array.from(new Uint8Array(data));
+                                    getNative()?.realWriteFileSync?.(filePath, arr, options)
+                                        .catch((e: any) => compat_logger.error("realWriteFileSync failed:", e));
+                                    return undefined;
+                                }
+                                return original.call(target, filePath, data, options);
+                            };
+
+                        case "readFileSync":
+                            return function (filePath: string, options?: any) {
+                                if (isReal(filePath)) {
+                                    compat_logger.warn(`readFileSync on real path "${filePath}" - using async fallback`);
+                                    // Can't do true sync, throw with helpful message
+                                    throw new Error(
+                                        "readFileSync on real path \"" + filePath + "\" not supported synchronously. " +
+                                        "Use virtual paths or async methods."
+                                    );
+                                }
+                                return original.call(target, filePath, options);
+                            };
+
+                        case "existsSync":
+                            return function (filePath: string) {
+                                if (isReal(filePath)) {
+                                    compat_logger.debug("existsSync on real path, assuming true:", filePath);
+                                    return true;
+                                }
+                                return original.call(target, filePath);
+                            };
+
+                        case "statSync":
+                            return function (filePath: string) {
+                                if (isReal(filePath)) {
+                                    throw new Error(
+                                        `statSync on real path "${filePath}" not supported synchronously.`
+                                    );
+                                }
+                                return original.call(target, filePath);
+                            };
+
+                        case "unlinkSync":
+                            return function (filePath: string) {
+                                if (isReal(filePath)) {
+                                    getNative()?.realUnlinkSync?.(filePath)
+                                        .catch((e: any) => compat_logger.error("realUnlinkSync failed:", e));
+                                    return undefined;
+                                }
+                                return original.call(target, filePath);
+                            };
+
+                        case "createWriteStream":
+                            return function (filePath: string, options?: any) {
+                                if (isReal(filePath)) {
+                                    return createRealFsWriteStream(filePath, options);
+                                }
+                                return original.call(target, filePath, options);
+                            };
+
+                        // Async methods
+                        case "mkdir":
+                            return async function (dirPath: string, options?: any) {
+                                if (isReal(dirPath)) {
+                                    const result = await getNative()?.realMkdir?.(dirPath, options);
+                                    if (!result?.success) {
+                                        throw new Error(result?.error || "mkdir failed");
+                                    }
+                                    return undefined;
+                                }
+                                return original.call(target, dirPath, options);
+                            };
+
+                        case "writeFile":
+                            return async function (filePath: string, data: any, options?: any) {
+                                if (isReal(filePath)) {
+                                    const arr = data instanceof Uint8Array ? Array.from(data) :
+                                        data instanceof ArrayBuffer ? Array.from(new Uint8Array(data)) :
+                                            typeof data === "string" ? Array.from(new TextEncoder().encode(data)) :
+                                                Array.from(new Uint8Array(data));
+                                    const result = await getNative()?.realWriteFile?.(filePath, arr, options);
+                                    if (!result?.success) {
+                                        throw new Error(result?.error || "writeFile failed");
+                                    }
+                                    return undefined;
+                                }
+                                return original.call(target, filePath, data, options);
+                            };
+
+                        case "readFile":
+                            return async function (filePath: string, options?: any) {
+                                if (isReal(filePath)) {
+                                    const result = await getNative()?.realReadFile?.(filePath, options);
+                                    if (!result?.success) {
+                                        throw new Error(result?.error || "readFile failed");
+                                    }
+                                    if (result.text !== undefined) {
+                                        return result.text;
+                                    }
+                                    return new Uint8Array(result.data);
+                                }
+                                return original.call(target, filePath, options);
+                            };
+
+                        case "stat":
+                            return async function (filePath: string) {
+                                if (isReal(filePath)) {
+                                    const result = await getNative()?.realStat?.(filePath);
+                                    if (!result?.success) {
+                                        throw new Error(result?.error || "stat failed");
+                                    }
+                                    return {
+                                        size: result.size,
+                                        isDirectory: () => result.isDirectory,
+                                        isFile: () => result.isFile,
+                                        mtimeMs: result.mtimeMs
+                                    };
+                                }
+                                return original.call(target, filePath);
+                            };
+
+                        case "unlink":
+                            return async function (filePath: string) {
+                                if (isReal(filePath)) {
+                                    const result = await getNative()?.realUnlink?.(filePath);
+                                    if (!result?.success) {
+                                        throw new Error(result?.error || "unlink failed");
+                                    }
+                                    return undefined;
+                                }
+                                return original.call(target, filePath);
+                            };
+
+                        case "exists":
+                            return async function (filePath: string) {
+                                if (isReal(filePath)) {
+                                    const result = await getNative()?.realExistsSync?.(filePath);
+                                    return result === true;
+                                }
+                                return original.call(target, filePath);
+                            };
+
+                        default:
+                            return typeof original === "function" ? original.bind(target) : original;
+                    }
+                }
+            });
+        };
+
         const ReImplementationObject = {
             fs: {},
             path: {},
+            os: {
+                tmpdir() {
+                    // Use cached value if available (set at startup via native)
+                    if (cachedTempDir) return cachedTempDir;
+
+                    // Fallback to environment variables (cross-platform)
+                    if (process.env.TEMP) return process.env.TEMP; // Windows
+                    if (process.env.TMP) return process.env.TMP; // Windows alt
+                    if (process.env.TMPDIR) return process.env.TMPDIR; // macOS/Linux
+
+                    // Last resort fallbacks
+                    return process.platform === "win32"
+                        ? "C:\\Windows\\Temp"
+                        : "/tmp";
+                },
+                homedir() {
+                    return process.env.HOME || process.env.USERPROFILE || "";
+                },
+                platform() {
+                    return process.platform;
+                },
+                type() {
+                    // Returns OS name
+                    const p = process.platform;
+                    if (p === "win32") return "Windows_NT";
+                    if (p === "darwin") return "Darwin";
+                    return "Linux";
+                },
+                release() {
+                    return ""; // Can't easily get this without native
+                },
+                arch() {
+                    return process.arch || "x64";
+                }
+            },
             https: {
                 get_(url: string, options, callback) {
                     // Handle optional options parameter
@@ -475,6 +911,13 @@ export default definePlugin({
                         const target = "/home/fake";
                         FSUtils.mkdirSyncRecursive(target);
                         return target;
+                    },
+                    get BETTERDISCORD_DATA_PATH() {
+                        // Use virtual path for temp operations - stays in ZenFS
+                        // Final output to real fs is handled by hybrid wrapper
+                        const target = "/BD/temp";
+                        FSUtils.mkdirSyncRecursive(target);
+                        return target;
                     }
                 },
             },
@@ -587,7 +1030,18 @@ export default definePlugin({
                     }
                 }, 100);
             })
-        ]).then(() => {
+        ]).then(async () => {
+            // === ADD THIS BLOCK ===
+            // Cache temp dir for sync os.tmpdir() calls
+            try {
+                const native = VencordNative.pluginHelpers["BD Compatibility Layer"] as any;
+                if (native?.getSystemTempDir) {
+                    cachedTempDir = await native.getSystemTempDir();
+                    compat_logger.info("Cached system temp dir:", cachedTempDir);
+                }
+            } catch (e) {
+                compat_logger.warn("Failed to cache temp dir, using fallback:", e);
+            }
             // Shim to patch the Discord `App` wrapper to prevent BD plugins from throwing
             // when native getters are missing or unstable. This relies on internal APIs and although the shim is technically robust
             // it may break when Discord updates, but hey - tons of things may break across arbitrary Discord updates.
