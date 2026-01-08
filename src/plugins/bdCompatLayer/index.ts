@@ -1031,7 +1031,6 @@ export default definePlugin({
                 }, 100);
             })
         ]).then(async () => {
-            // === ADD THIS BLOCK ===
             // Cache temp dir for sync os.tmpdir() calls
             try {
                 const native = VencordNative.pluginHelpers["BD Compatibility Layer"] as any;
