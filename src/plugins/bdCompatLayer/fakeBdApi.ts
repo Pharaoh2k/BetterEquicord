@@ -865,9 +865,11 @@ export const CommandsHolder = {
     }
 };
 const getOptions = (args: any[], defaultOptions = {}) => {
-    const lastArg = args.at(-1);
-    if (typeof lastArg === "object" && lastArg !== null && !Array.isArray(lastArg)) {
-        Object.assign(defaultOptions, args.pop());
+    if (args.length > 1) {
+        const lastArg = args.at(-1);
+        if (typeof lastArg === "object" && lastArg !== null && !Array.isArray(lastArg)) {
+            Object.assign(defaultOptions, args.pop());
+        }
     }
     return defaultOptions;
 };
@@ -1061,7 +1063,8 @@ export const WebpackHolder = {
         return this.getModule(this.Filters.byStrings(...strings), moreOpts);
     },
     getByProps(...props) {
-        return this.getModule(this.Filters.byProps(...props), {});
+        const moreOpts = getOptions(props);
+        return this.getModule(this.Filters.byProps(...props), moreOpts);
     },
     get getByKeys() { return WebpackHolder.getByProps.bind(WebpackHolder); },
     getModules(...etc) {
@@ -1087,11 +1090,11 @@ export const WebpackHolder = {
     getAllByString(...strings) {
         return this.getModule(this.Filters.byStrings(...strings), { first: false });
     },
-    getByRegex(regex) {
-        return this.getModule(this.Filters.byRegex(regex), { first: true });
+    getByRegex(regex, options = {}) {
+        return this.getModule(this.Filters.byRegex(regex), options);
     },
-    getAllByRegex(regex) {
-        return this.getModule(this.Filters.byRegex(regex), { first: false });
+    getAllByRegex(regex, options = {}) {
+        return this.getModule(this.Filters.byRegex(regex), Object.assign({}, options, { first: false }));
     },
     getBySource(...strings) {
         const moreOpts = getOptions(strings);
