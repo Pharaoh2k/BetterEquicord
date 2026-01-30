@@ -196,6 +196,34 @@ function shouldSkipModule(exports) {
     return false;
 }
 
+const IS_CLASSNAME_MODULE = /^[a-zA-Z_]\w*_[a-f0-9]+$/;
+const EXTRACT_CLASS = /^(.+?)_/;
+const polyfillClassNames = Symbol("BD.Polyfilled.class");
+function polyfillClassNameModule(exports) {
+    if (typeof exports !== "object" || exports === null) return;
+    if (exports[polyfillClassNames]) return;
+    const keys = Object.keys(exports);
+    if (keys.length === 0) return;
+    let hasClassValues = false;
+    for (const key of keys) {
+        if (key === "__esModule") continue;
+        const val = exports[key];
+        if (typeof val !== "string") return;
+        if (IS_CLASSNAME_MODULE.test(val)) hasClassValues = true;
+    }
+    if (!hasClassValues) return;
+    const definers = { [polyfillClassNames]: { value: true } };
+    for (const key of keys) {
+        const val = exports[key];
+        if (typeof val !== "string") continue;
+        const match = val.match(EXTRACT_CLASS);
+        if (!match) continue;
+        if (match[1] in exports) continue;
+        definers[match[1]] = { value: val };
+    }
+    Object.defineProperties(exports, definers);
+}
+
 const hasThrown = new WeakSet();
 const wrapFilter = filter => (exports, module, moduleId) => {
     try {
@@ -226,9 +254,10 @@ function getModule(filter, options = {}) {
         try { module = modules[index]; } catch { continue; }
         const { exports } = module;
         if (shouldSkipModule(exports)) continue;
+        polyfillClassNameModule(exports);
         if (typeof (exports) === "object" && searchExports && !exports.TypedArray) {
             if (wrappedFilter(exports, module, index)) {
-                let foundModule = raw ? module : exports;
+                const foundModule = raw ? module : exports;
                 if (first) return foundModule;
                 rm.push(foundModule);
             }
@@ -247,8 +276,8 @@ function getModule(filter, options = {}) {
         }
         else {
             let foundModule = null;
-            if (exports.Z && wrappedFilter(exports.Z, module, index)) foundModule = defaultExport ? exports.Z : exports;
-            if (exports.ZP && wrappedFilter(exports.ZP, module, index)) foundModule = defaultExport ? exports.ZP : exports;
+            if (exports.A && wrappedFilter(exports.A, module, index)) foundModule = defaultExport ? exports.A : exports;
+            if (exports.Ay && wrappedFilter(exports.Ay, module, index)) foundModule = defaultExport ? exports.Ay : exports;
             if (exports.__esModule && exports.default && wrappedFilter(exports.default, module, index)) foundModule = defaultExport ? exports.default : exports;
             if (wrappedFilter(exports, module, index)) foundModule = exports;
             if (!foundModule) continue;

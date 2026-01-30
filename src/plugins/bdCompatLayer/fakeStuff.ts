@@ -118,7 +118,7 @@ async function tryExtensionFetch(url: string): Promise<Response | null> {
                 type: "EQUICORD_CORS_FETCH_REQUEST",
                 url: url,
                 requestId: requestId
-            }, "*");
+            }, window.location.origin);
         });
 
         if (!result || result.error) {
@@ -128,7 +128,7 @@ async function tryExtensionFetch(url: string): Promise<Response | null> {
         const binary = atob(result.body);
         const bytes = new Uint8Array(binary.length);
         for (let i = 0; i < binary.length; i++) {
-            bytes[i] = binary.charCodeAt(i);
+            bytes[i] = binary.codePointAt(i)!;
         }
 
         return new Response(bytes, {
@@ -151,7 +151,7 @@ async function tryNativeFetch(url: string): Promise<Response | null> {
         const binary = atob(result.body);
         const bytes = new Uint8Array(binary.length);
         for (let i = 0; i < binary.length; i++) {
-            bytes[i] = binary.charCodeAt(i);
+            bytes[i] = binary.codePointAt(i)!;
         }
 
         return new Response(bytes, {
@@ -163,18 +163,35 @@ async function tryNativeFetch(url: string): Promise<Response | null> {
     }
 }
 
-const NATIVE_FETCH_DOMAINS = [
+const NATIVE_FETCH_DOMAINS = new Set([
     "cdn.discordapp.com",
     "media.discordapp.net",
-];
+]);
 
 function shouldUseNativeFetch(url: string): boolean {
     try {
         const parsed = new URL(url);
-        return NATIVE_FETCH_DOMAINS.some(d => parsed.hostname === d);
+        return NATIVE_FETCH_DOMAINS.has(parsed.hostname);
     } catch {
         return false;
     }
+}
+
+async function tryFetchMethod(
+    reqId: string, label: string, fn: () => Promise<Response | null>
+): Promise<Response | null> {
+    try {
+        compat_logger.debug(`[${reqId}] Trying ${label}...`);
+        const result = await fn();
+        if (result) {
+            compat_logger.debug(`[${reqId}] (${label}) Success.`);
+            return result;
+        }
+        compat_logger.debug(`[${reqId}] (${label}) No result.`);
+    } catch {
+        compat_logger.debug(`[${reqId}] (${label}) Failed.`);
+    }
+    return null;
 }
 
 export async function fetchWithCorsProxyFallback(url: string, corsProxy: string, options: any = {}) {
@@ -182,67 +199,24 @@ export async function fetchWithCorsProxyFallback(url: string, corsProxy: string,
     const isGet = options.method === undefined || options.method?.toLowerCase() === "get";
     const useNativeFirst = isGet && shouldUseNativeFetch(url);
 
-    // Method 1: Try native IPC fetch first for Discord CDN URLs (Electron)
-    if (useNativeFirst) {
-        try {
-            compat_logger.debug(`[${reqId}] Requesting ${url} via native IPC...`, options);
-            const result = await tryNativeFetch(url);
-            if (result) {
-                compat_logger.debug(`[${reqId}] (Native IPC) Success.`);
-                return result;
-            }
-        } catch (error) {
-            compat_logger.debug(`[${reqId}] (Native IPC) Failed.`);
-        }
+    type FetchStep = { label: string; fn: () => Promise<Response | null>; };
+    const steps: FetchStep[] = [
+        ...(useNativeFirst ? [
+            { label: "Native IPC", fn: () => tryNativeFetch(url) },
+            { label: "Extension", fn: () => tryExtensionFetch(url) },
+        ] : []),
+        { label: "Direct", fn: () => fetch(url, options) },
+        ...(isGet && !useNativeFirst ? [
+            { label: "Native IPC", fn: () => tryNativeFetch(url) },
+        ] : []),
+        ...(isGet && corsProxy ? [
+            { label: "CORS Proxy", fn: () => fetch(`${corsProxy}${url}`, options) },
+        ] : []),
+    ];
 
-        // Try extension background fetch (Chrome extension)
-        try {
-            compat_logger.debug(`[${reqId}] Trying extension fetch...`);
-            const result = await tryExtensionFetch(url);
-            if (result) {
-                compat_logger.debug(`[${reqId}] (Extension) Success.`);
-                return result;
-            }
-        } catch (error) {
-            compat_logger.debug(`[${reqId}] (Extension) Failed.`);
-        }
-    }
-
-    // Method 2: Try direct fetch
-    try {
-        compat_logger.debug(`[${reqId}] Requesting ${url}...`, options);
-        const result = await fetch(url, options);
-        compat_logger.debug(`[${reqId}] Success.`);
-        return result;
-    } catch (error) {
-        compat_logger.debug(`[${reqId}] Direct fetch failed.`);
-    }
-
-    // Method 3: Try native IPC fetch if not already tried
-    if (isGet && !useNativeFirst) {
-        try {
-            compat_logger.debug(`[${reqId}] Trying native IPC fetch...`);
-            const result = await tryNativeFetch(url);
-            if (result) {
-                compat_logger.debug(`[${reqId}] (Native IPC) Success.`);
-                return result;
-            }
-            compat_logger.debug(`[${reqId}] (Native IPC) Not available.`);
-        } catch (error) {
-            compat_logger.debug(`[${reqId}] (Native IPC) Failed.`);
-        }
-    }
-
-    // Method 4: Fall back to CORS proxy
-    if (isGet && corsProxy) {
-        compat_logger.debug(`[${reqId}] Trying CORS proxy...`);
-        try {
-            const result = await fetch(`${corsProxy}${url}`, options);
-            compat_logger.debug(`[${reqId}] (Proxy) Success.`);
-            return result;
-        } catch (error) {
-            compat_logger.debug(`[${reqId}] (Proxy) Failed.`);
-        }
+    for (const step of steps) {
+        const result = await tryFetchMethod(reqId, step.label, step.fn);
+        if (result) return result;
     }
 
     compat_logger.debug(`[${reqId}] All methods failed.`);

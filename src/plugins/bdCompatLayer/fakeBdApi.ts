@@ -1094,7 +1094,7 @@ export const WebpackHolder = {
         return this.getModule(this.Filters.byRegex(regex), options);
     },
     getAllByRegex(regex, options = {}) {
-        return this.getModule(this.Filters.byRegex(regex), Object.assign({}, options, { first: false }));
+        return this.getModule(this.Filters.byRegex(regex), { ...options, first: false });
     },
     getBySource(...strings) {
         const moreOpts = getOptions(strings);

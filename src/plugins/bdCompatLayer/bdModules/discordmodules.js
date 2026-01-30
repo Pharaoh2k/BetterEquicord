@@ -86,7 +86,7 @@ function memoize(target) {
  * @returns {object} Memoized DiscordModules object
  */
 export function createDiscordModules() {
-    const { Webpack } = window.BdApi;
+    const { Webpack } = globalThis.BdApi;
     const { Filters } = Webpack;
     const getByKeys = Webpack.getByKeys.bind(Webpack);
     const getByStrings = Webpack.getByStrings.bind(Webpack);
@@ -99,7 +99,7 @@ export function createDiscordModules() {
         },
 
         get ReactDOM() {
-            return Object.assign({}, getByKeys("createPortal"), getByKeys("createRoot"));
+            return { ...getByKeys("createPortal"), ...getByKeys("createRoot") };
         },
 
         get ReactSpring() {
@@ -131,7 +131,7 @@ export function createDiscordModules() {
         },
 
         get Dispatcher() {
-            return getByKeys("dispatch", "subscribe", "register");
+            return getByKeys("dispatch", "subscribe", "register", { searchExports: true });
         },
 
         get Tooltip() {

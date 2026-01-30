@@ -28,7 +28,7 @@
 import { realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 const gl_require = createRequire(realpathSync("."));
-export function bdCompatLayerUniqueId() { }
+export function bdCompatLayerUniqueId() { /* intentionally empty – used as a unique identifier */ }
 export function unsafe_req() {
     return gl_require;
 }

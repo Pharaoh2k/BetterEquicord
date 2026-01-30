@@ -39,9 +39,9 @@ import { addLogger } from "../utils";
  * @returns {ContextMenu} Instantiated ContextMenu API
  */
 export function createContextMenu(Patcher) {
-    const { Webpack } = window.BdApi;
+    const { Webpack } = globalThis.BdApi;
     const { Filters } = Webpack;
-    const { React } = window.BdApi;
+    const { React } = globalThis.BdApi;
     const webpackRequire = Webpack.require;
     const Logger = addLogger("ContextMenu");
 
@@ -59,7 +59,7 @@ export function createContextMenu(Patcher) {
         Menu: ModulesBundle?.Menu,
     };
 
-    startupComplete = Object.values(MenuComponents).every(v => v);
+    startupComplete = Object.values(MenuComponents).every(Boolean);
 
     // Fallback: search for menu components via regex if not found in bundle
     if (!startupComplete) {
@@ -72,7 +72,7 @@ export function createContextMenu(Patcher) {
         let menuParser = "";
 
         for (const key in webpackRequire.m) {
-            if (Object.prototype.hasOwnProperty.call(webpackRequire.m, key)) {
+            if (Object.hasOwn(webpackRequire.m, key)) {
                 if (REGEX.test(webpackRequire.m[key].toString())) {
                     menuItemsId = key;
                     break;
@@ -81,7 +81,7 @@ export function createContextMenu(Patcher) {
         }
 
         for (const key in webpackRequire.m) {
-            if (Object.prototype.hasOwnProperty.call(webpackRequire.m, key)) {
+            if (Object.hasOwn(webpackRequire.m, key)) {
                 const string = webpackRequire.m[key].toString();
                 if (string.includes(menuItemsId) && string.includes("Menu API only allows Items and groups of Items as children")) {
                     menuParser = string;
@@ -105,12 +105,12 @@ export function createContextMenu(Patcher) {
                 }
             }
 
-            const matchA = menuParser.match(EXTRACT_GROUP_REGEX);
+            const matchA = EXTRACT_GROUP_REGEX.exec(menuParser);
             if (matchA) {
                 MenuComponents.Group ??= contextMenuComponents[matchA[1]];
             }
 
-            const matchB = menuParser.match(EXTRACT_GROUP_ITEM_REGEX);
+            const matchB = EXTRACT_GROUP_ITEM_REGEX.exec(menuParser);
             if (matchB) {
                 MenuComponents.Group ??= contextMenuComponents[matchB[matchB[2] === "groupstart" ? 1 : 3]];
                 MenuComponents.Item ??= contextMenuComponents[matchB[matchB[2] === "customitem" ? 1 : 3]];
@@ -123,7 +123,7 @@ export function createContextMenu(Patcher) {
         }
     }
 
-    startupComplete = Object.values(MenuComponents).every(v => v);
+    startupComplete = Object.values(MenuComponents).every(Boolean);
 
     // Get context menu actions (open/close)
     const ContextMenuActions = (() => {
@@ -151,6 +151,34 @@ export function createContextMenu(Patcher) {
         return out;
     })();
 
+    function findContextMenuModule() {
+        const foundModule = Webpack.getModule(
+            m => Object.values(m).some(v => typeof v === "function" && v.toString().includes("type:\"CONTEXT_MENU_CLOSE\"")),
+            { searchExports: false }
+        );
+        const foundKey = Object.keys(foundModule).find(k => foundModule[k].length === 3);
+        return { module: foundModule, key: foundKey };
+    }
+
+    function patchedRenderCallback(render, props) {
+        const res = render(props);
+        if (res?.props.navId) {
+            MenuPatcher.runPatches(res.props.navId, res, props);
+        }
+        else if (typeof res?.type === "function") {
+            MenuPatcher.patchRecursive(res, "type");
+        }
+        return res;
+    }
+
+    function contextMenuPatchCallback(_, methodArguments) {
+        const promise = methodArguments[1];
+        methodArguments[1] = async function (...args) {
+            const render = await promise.apply(this, args);
+            return props => patchedRenderCallback(render, props);
+        };
+    }
+
     // Menu patcher class for intercepting context menus
     class MenuPatcher {
         static MAX_PATCH_ITERATIONS = 10;
@@ -162,31 +190,9 @@ export function createContextMenu(Patcher) {
                 return Logger.warn("ContextMenu~Patcher", "Startup wasn't successful, aborting initialization.");
             }
 
-            const { module, key } = (() => {
-                const foundModule = Webpack.getModule(
-                    m => Object.values(m).some(v => typeof v === "function" && v.toString().includes("type:\"CONTEXT_MENU_CLOSE\"")),
-                    { searchExports: false }
-                );
-                const foundKey = Object.keys(foundModule).find(k => foundModule[k].length === 3);
-                return { module: foundModule, key: foundKey };
-            })();
+            const { module, key } = findContextMenuModule();
 
-            Patcher.before("ContextMenuPatcher", module, key, (_, methodArguments) => {
-                const promise = methodArguments[1];
-                methodArguments[1] = async function (...args) {
-                    const render = await promise.apply(this, args);
-                    return props => {
-                        const res = render(props);
-                        if (res?.props.navId) {
-                            MenuPatcher.runPatches(res.props.navId, res, props);
-                        }
-                        else if (typeof res?.type === "function") {
-                            MenuPatcher.patchRecursive(res, "type");
-                        }
-                        return res;
-                    };
-                };
-            });
+            Patcher.before("ContextMenuPatcher", module, key, contextMenuPatchCallback);
         }
 
         static patchRecursive(target, method, iteration = 0) {
@@ -275,7 +281,7 @@ export function createContextMenu(Patcher) {
                 Component = MenuComponents.ControlItem;
             }
 
-            if (!props.id) props.id = `${props.label.replace(/^[^a-z]+|[^\w-]+/gi, "-")}`;
+            if (!props.id) props.id = `${props.label.replaceAll(/(?:^[^a-z]+)|(?:[^\w-]+)/gi, "-")}`;
             if (props.danger) props.color = "danger";
             if (props.onClick && !props.action) props.action = props.onClick;
             props.extended = true;
@@ -295,31 +301,29 @@ export function createContextMenu(Patcher) {
         }
 
         buildMenuChildren(setup) {
-            const self = this;
-
             const mapper = s => {
                 if (s.type === "group") return buildGroup(s);
-                return self.buildItem(s);
+                return this.buildItem(s);
             };
 
-            const buildGroup = function (group) {
-                const items = group.items.map(mapper).filter(i => i);
+            const buildGroup = group => {
+                const items = group.items.map(mapper).filter(Boolean);
                 return React.createElement(MenuComponents.Group, null, items);
             };
 
-            return setup.map(mapper).filter(i => i);
+            return setup.map(mapper).filter(Boolean);
         }
 
         buildMenu(setup) {
-            const self = this;
+            const children = this.buildMenuChildren(setup);
             return props => {
-                return React.createElement(MenuComponents.Menu, props, self.buildMenuChildren(setup));
+                return React.createElement(MenuComponents.Menu, props, children);
             };
         }
 
         open(event, menuComponent, config) {
             return ContextMenuActions.openContextMenu(event, function (e) {
-                return React.createElement(menuComponent, Object.assign({}, e, { onClose: ContextMenuActions.closeContextMenu }));
+                return React.createElement(menuComponent, { ...e, onClose: ContextMenuActions.closeContextMenu });
             }, config);
         }
 

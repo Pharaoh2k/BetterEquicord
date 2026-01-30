@@ -19,7 +19,6 @@
  * SPDX-License-Identifier: GPL-3.0-only
  */
 
-
 import { Button } from "@components/Button";
 import { React, useEffect, useMemo, useRef, useState } from "@webpack/common";
 

@@ -50,7 +50,6 @@ export function evalInScope(js: string, contextAsScope: any) {
     return new Function(["contextAsScope", "js"], "return (function() { with(this) { return eval(js); } }).call(contextAsScope)")(contextAsScope, js);
 }
 
-
 export function addLogger(pluginName: string = "BD Plugin") {
     const prefix = `[${pluginName}]`;
 
