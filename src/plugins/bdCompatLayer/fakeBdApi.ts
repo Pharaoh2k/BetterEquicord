@@ -977,8 +977,8 @@ export const WebpackHolder = {
             };
         },
     },
-    find(filter) { return this.getModule(filter, { first: true }); },
-    findAll(filter) { return this.getModule(filter, { first: false }); },
+    find(filter) { return WebpackHolder.getModule(filter, { first: true }); },
+    findAll(filter) { return WebpackHolder.getModule(filter, { first: false }); },
     getModule(...args: Parameters<typeof BdApi_getModule>) {
         if (args[1]?.raw === true) {
             const fn = args[0];
@@ -996,7 +996,7 @@ export const WebpackHolder = {
         return BdApi_getModule(...args);
     },
     waitForModule(filter, options?) {
-        if (options) return this.getLazy(filter, options);
+        if (options) return WebpackHolder.getLazy(filter, options);
         return new Promise(resolve => {
             Vencord.Webpack.waitFor(filter, module => resolve(module));
         });
@@ -1010,7 +1010,7 @@ export const WebpackHolder = {
             return Promise.resolve(undefined);
         }
 
-        const fromCache = this.getModule(filter, { defaultExport, searchExports });
+        const fromCache = WebpackHolder.getModule(filter, { defaultExport, searchExports });
         if (fromCache) return Promise.resolve(fromCache);
 
         return new Promise((resolve, reject) => {
@@ -1022,7 +1022,7 @@ export const WebpackHolder = {
                 }
             };
             Vencord.Webpack.waitFor(filter, () => {
-                const result = this.getModule(filter, { defaultExport, searchExports });
+                const result = WebpackHolder.getModule(filter, { defaultExport, searchExports });
                 if (raw) {
                     resolve({ exports: result });
                 } else {
@@ -1034,7 +1034,7 @@ export const WebpackHolder = {
     },
     getModuleWithKey(filter) {
         let target, id, key;
-        this.getModule((e, m, i) => {
+        WebpackHolder.getModule((e, m, i) => {
             const matched = filter(e, m, i);
             if (matched) {
                 target = m;
@@ -1051,25 +1051,25 @@ export const WebpackHolder = {
         return [target.exports, key];
     },
     getByDisplayName(name) {
-        return this.getModule(this.Filters.byDisplayName(name));
+        return WebpackHolder.getModule(WebpackHolder.Filters.byDisplayName(name));
     },
     getAllByProps(...props) {
         const moreOpts = getOptions(props, { first: false });
-        return this.getModule(this.Filters.byProps(...props), moreOpts);
+        return WebpackHolder.getModule(WebpackHolder.Filters.byProps(...props), moreOpts);
     },
-    get getAllByKeys() { return this.getAllByProps; },
+    get getAllByKeys() { return WebpackHolder.getAllByProps; },
     getAllByStrings(...strings: any[]) {
         const moreOpts = getOptions(strings, { first: false });
-        return this.getModule(this.Filters.byStrings(...strings), moreOpts);
+        return WebpackHolder.getModule(WebpackHolder.Filters.byStrings(...strings), moreOpts);
     },
     getByProps(...props) {
         const moreOpts = getOptions(props);
-        return this.getModule(this.Filters.byProps(...props), moreOpts);
+        return WebpackHolder.getModule(WebpackHolder.Filters.byProps(...props), moreOpts);
     },
     get getByKeys() { return WebpackHolder.getByProps.bind(WebpackHolder); },
     getModules(...etc) {
         const [first, ...rest] = etc;
-        return this.getModule(first, { ...Object.assign({}, ...rest), first: false });
+        return WebpackHolder.getModule(first, { ...Object.assign({}, ...rest), first: false });
     },
     getByPrototypes(...fields) {
         const moreOpts = getOptions(fields);
@@ -1077,37 +1077,37 @@ export const WebpackHolder = {
     },
     getAllByPrototypes(...fields) {
         const moreOpts = getOptions(fields, { first: false });
-        return this.getModule(this.Filters.byPrototypeKeys(fields), moreOpts);
+        return WebpackHolder.getModule(WebpackHolder.Filters.byPrototypeKeys(fields), moreOpts);
     },
-    get getByPrototypeKeys() { return this.getByPrototypes; },
+    get getByPrototypeKeys() { return WebpackHolder.getByPrototypes; },
     getByStrings(...strings) {
         const moreOpts = getOptions(strings);
         return WebpackHolder.getModule(WebpackHolder.Filters.byStrings(...strings.flat()), moreOpts);
     },
     getByString(...strings) {
-        return this.getModule(this.Filters.byStrings(...strings));
+        return WebpackHolder.getModule(WebpackHolder.Filters.byStrings(...strings));
     },
     getAllByString(...strings) {
-        return this.getModule(this.Filters.byStrings(...strings), { first: false });
+        return WebpackHolder.getModule(WebpackHolder.Filters.byStrings(...strings), { first: false });
     },
     getByRegex(regex, options = {}) {
-        return this.getModule(this.Filters.byRegex(regex), options);
+        return WebpackHolder.getModule(WebpackHolder.Filters.byRegex(regex), options);
     },
     getAllByRegex(regex, options = {}) {
-        return this.getModule(this.Filters.byRegex(regex), { ...options, first: false });
+        return WebpackHolder.getModule(WebpackHolder.Filters.byRegex(regex), { ...options, first: false });
     },
     getBySource(...strings) {
         const moreOpts = getOptions(strings);
-        return this.getModule(this.Filters.bySource(...strings), moreOpts);
+        return WebpackHolder.getModule(WebpackHolder.Filters.bySource(...strings), moreOpts);
     },
     getAllBySource(match) {
-        return this.getModule(this.Filters.bySource(match), { first: false });
+        return WebpackHolder.getModule(WebpackHolder.Filters.bySource(match), { first: false });
     },
     findByUniqueProperties(props) {
-        return this.getByProps(...props);
+        return WebpackHolder.getByProps(...props);
     },
     findAllByUniqueProperties(props) {
-        return this.getAllByProps(...props);
+        return WebpackHolder.getAllByProps(...props);
     },
     getStore(name) {
         return WebpackHolder.getModule(WebpackHolder.Filters.byStoreName(name));
@@ -1177,19 +1177,19 @@ export const WebpackHolder = {
 
         // Convert string/RegExp filter to bySource filter
         if (typeof filter === "string" || filter instanceof RegExp) {
-            filter = this.Filters.bySource(filter);
+            filter = WebpackHolder.Filters.bySource(filter);
         }
 
         // Get the module - support numeric ID or filter function
         let module = typeof filter === "number"
-            ? this.require.c?.[filter]?.exports
-            : this.getModule(filter, { raw, ...rest });
+            ? WebpackHolder.require.c?.[filter]?.exports
+            : WebpackHolder.getModule(filter, { raw, ...rest });
 
         if (!module) return {} as typeof mangled;
         if (raw) module = module.exports;
 
         // Map the mangled exports to friendly names
-        const returnValue = this._mapMangledObject(module, mangled);
+        const returnValue = WebpackHolder._mapMangledObject(module, mangled);
 
         // Store reference to original module (BD uses Symbol, we use hidden prop)
         Object.defineProperty(returnValue, "__mangledModule", {
@@ -1295,7 +1295,7 @@ export const WebpackHolder = {
      * Matches BetterDiscord's getBulkKeyed from webpack/utilities.ts
      */
     getBulkKeyed<T extends object>(queries: Record<keyof T, { filter: (m: any) => unknown, searchExports?: boolean, defaultExport?: boolean, searchDefault?: boolean, raw?: boolean, all?: boolean, fatal?: boolean, map?: Record<string, (exp: any) => boolean>; }>): T {
-        const modules = this.getBulk(...Object.values(queries) as any[]); // NOSONAR: Type assertion required for TypeScript to accept spread of Object.values
+        const modules = WebpackHolder.getBulk(...Object.values(queries) as any[]); // NOSONAR: Type assertion required for TypeScript to accept spread of Object.values
         return Object.fromEntries(
             Object.keys(queries).map((key, index) => [key, modules[index]])
         ) as T;
@@ -1305,7 +1305,7 @@ export const WebpackHolder = {
      * Like getBulk but accepts a keyed object of queries and returns a keyed object of results.
      */
     get getBulkObject() {
-        return this.getBulkKeyed.bind(this);
+        return WebpackHolder.getBulkKeyed.bind(WebpackHolder);
     },
 };
 /**
