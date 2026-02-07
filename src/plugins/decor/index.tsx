@@ -104,11 +104,7 @@ export default definePlugin({
             find,
             replacement: [
                 {
-                    match: /(?<=userValue:)((\i)(?:.{0,10})?\.avatarDecoration)/,
-                    replace: "$self.useUserDecorAvatarDecoration($2)??$1"
-                },
-                {
-                    match: /(?<=userValue:)((\i)(?:.{0,10})?\.avatarDecoration)/,
+                    match: /(?<=userValue:)((\i(?:\.author)?)\?\.avatarDecoration)/,
                     replace: "$self.useUserDecorAvatarDecoration($2)??$1"
                 }
             ]

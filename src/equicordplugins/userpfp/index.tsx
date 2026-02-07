@@ -118,7 +118,7 @@ export default definePlugin({
                     id="set-avatar"
                     icon={PencilIcon}
                     action={async () => {
-                        await requireSettingsMenu();
+                        await requireSettingsModal();
                         openModal(modalProps => <SetAvatarModal userId={user.id} modalProps={modalProps} />);
                     }}
                 />
