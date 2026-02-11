@@ -123,3 +123,8 @@ export function isEquicordSupport(userId: string | null | undefined): boolean {
     const member = GuildMemberStore.getMember(GUILD_ID, userId);
     return member?.roles?.includes(EQUICORD_HELPERS) || false;
 }
+
+export function removeFromArray<T>(arr: T[], predicate: (e: T) => boolean) {
+    const idx = arr.findIndex(predicate);
+    if (idx !== -1) arr.splice(idx, 1);
+}
