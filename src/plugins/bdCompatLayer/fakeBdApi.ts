@@ -1204,7 +1204,7 @@ export const WebpackHolder = {
         const { target: opt_target = null, ...rest } = options;
         function* generator() {
             const target = opt_target ?? WebpackHolder.getModule(
-                mod => Object.values(mod).some(filter),
+                mod => Object.values(mod).some(v => filter(v)),
                 rest
             );
             yield target;
@@ -3295,11 +3295,11 @@ class BdApiReImplementationInstance {
             for (let i = 0; i < maxLen; i++) {
                 const aNum = aParsed.nums[i] ?? 0;
                 const bNum = bParsed.nums[i] ?? 0;
-                if (aNum < bNum) return -1;
-                if (aNum > bNum) return 1;
+                if (aNum < bNum) return 1;
+                if (aNum > bNum) return -1;
             }
-            if (aParsed.preRelease && !bParsed.preRelease) return -1;
-            if (!aParsed.preRelease && bParsed.preRelease) return 1;
+            if (aParsed.preRelease && !bParsed.preRelease) return 1;
+            if (!aParsed.preRelease && bParsed.preRelease) return -1;
             return 0;
         },
         extend: ObjectMerger.perform.bind(ObjectMerger),
