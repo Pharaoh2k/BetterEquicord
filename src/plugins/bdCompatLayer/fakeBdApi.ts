@@ -266,6 +266,76 @@ function getReactComponentType(component: any): any {
     return inner;
 }
 
+/** Applies a NodePatcher callback, returning res if the callback returns undefined. */
+function nodePatcherApplyCallback(
+    callback: (props: any, res: any, instance?: any) => any,
+    props: any, res: any, instance?: any
+) {
+    const ret = callback(props, res, instance);
+    return ret === undefined ? res : ret;
+}
+
+/** Wraps an exotic React type (memo/forwardRef/lazy) for NodePatcher. */
+function nodePatcherWrapExotic(
+    R: any, type: any, newType: any,
+    patcherRef: { patch: (node: any, callback: any) => void; },
+    callback: (props: any, res: any, instance?: any) => any
+) {
+    if (type.type) {
+        return R.memo(
+            type.type?.render ? R.forwardRef(newType) : newType,
+            type.compare
+        );
+    }
+    if (type.render) return R.forwardRef(newType);
+    if (type._payload) {
+        return nodePatcherCreateLazy(R, type, patcherRef, callback);
+    }
+    return newType;
+}
+
+/** Creates a lazy-wrapped patched component for NodePatcher. */
+function nodePatcherCreateLazy(
+    R: any, type: any,
+    patcherRef: { patch: (node: any, callback: any) => void; },
+    callback: any
+) {
+    const handle = (component: any) => {
+        const fNode = { type: component };
+        patcherRef.patch(fNode, callback);
+        return fNode.type;
+    };
+    return R.lazy(() => {
+        const out = type._init(type._payload);
+        if (out instanceof Promise) {
+            return out.catch((err: any) => ({ "default": handle(err.default) }));
+        }
+        return Promise.resolve({ "default": handle(out) });
+    });
+}
+
+/** Caches and assigns a patched component type for NodePatcher. */
+function nodePatcherCacheAndAssign(
+    cacheMap: WeakMap<object, any>, symId: symbol,
+    type: any, newType: any, node: any
+) {
+    cacheMap.set(type, newType);
+    cacheMap.set(newType, newType);
+    newType[symId] = newType;
+    node.type = newType;
+}
+
+/** Handles the async result path for NodePatcher function components. */
+function nodePatcherHandleAsync(
+    res: Promise<any>, isDestroyed: () => boolean,
+    callback: (props: any, res: any) => any, props: any
+) {
+    return res.then((awaited: any) => {
+        if (isDestroyed()) return awaited;
+        return nodePatcherApplyCallback(callback, props, awaited);
+    });
+}
+
 /**
  * Error message thrown when hooks are called outside of render context.
  * Used by wrapInHooks to detect and suppress this specific error.
@@ -347,6 +417,50 @@ function vcIsNewer(v1: string, v2: string) {
     }
     return false;
 }
+/** Parses markdown changelog text into version blocks. */
+function parseChangelogMarkdown(md: string): { version: string; items: string[]; }[] {
+    const lines = md.split("\n");
+    const blocks: { version: string; items: string[]; }[] = [];
+    let cur: { version: string; items: string[]; } | null = null;
+    for (const line of lines) {
+        const ver = /^###\s+([\d.]+)/.exec(line)?.[1];
+        if (ver) {
+            if (cur) blocks.push(cur);
+            cur = { version: ver, items: [] };
+        } else if (cur && line.trim().startsWith("-")) {
+            const item = line.trim().slice(1).trim();
+            if (item) cur.items.push(item);
+        }
+    }
+    if (cur) blocks.push(cur);
+    return blocks;
+}
+
+/** Categorizes changelog items into buckets and returns formatted changes array. */
+function categorizeChangelogItems(
+    blocks: { version: string; items: string[]; }[],
+    fromVer: string, toVer: string
+): Array<{ title: string; type?: "fixed" | "added" | "progress" | "improved"; items: string[]; }> {
+    const relevant = blocks.filter(b => vcIsNewer(b.version, fromVer) && !vcIsNewer(b.version, toVer));
+    const buckets = { added: [] as string[], improved: [] as string[], fixed: [] as string[], other: [] as string[] };
+    for (const b of relevant) {
+        for (const it of b.items) {
+            const low = it.toLowerCase();
+            const tag = `${it} (v${b.version})`;
+            if (low.includes("fix")) buckets.fixed.push(tag);
+            else if (low.includes("add") || low.includes("initial")) buckets.added.push(tag);
+            else if (low.includes("improv") || low.includes("updat")) buckets.improved.push(tag);
+            else buckets.other.push(tag);
+        }
+    }
+    const changes: Array<{ title: string; type?: "fixed" | "added" | "progress" | "improved"; items: string[]; }> = [];
+    if (buckets.added.length) changes.push({ title: "New Features", type: "added", items: buckets.added });
+    if (buckets.improved.length) changes.push({ title: "Improvements", type: "improved", items: buckets.improved });
+    if (buckets.fixed.length) changes.push({ title: "Bug Fixes", type: "fixed", items: buckets.fixed });
+    if (buckets.other.length) changes.push({ title: "Other Changes", type: "progress", items: buckets.other });
+    return changes;
+}
+
 function tryShowCompatChangelog(name: string, fromVer: string, toVer: string) {
     if (document.querySelector(".bd-cl-host")) return;
     const entry: any = (Vencord.Plugins.plugins as any)?.[name] ?? null;
@@ -381,46 +495,8 @@ function tryShowCompatChangelog(name: string, fromVer: string, toVer: string) {
                     openModal(parsed);
                     return;
                 }
-                const lines = md.split("\n");
-                const blocks: { version: string; items: string[]; }[] = [];
-                let cur: { version: string; items: string[]; } | null = null;
-                for (const line of lines) {
-                    const ver = /^###\s+([\d.]+)/.exec(line)?.[1];
-                    if (ver) {
-                        if (cur) blocks.push(cur);
-                        cur = { version: ver, items: [] };
-                    } else if (cur && line.trim().startsWith("-")) {
-                        const item = line.trim().slice(1).trim();
-                        if (item) cur.items.push(item);
-                    }
-                }
-                if (cur) blocks.push(cur);
-                const isNewer = (a: string, b: string) => {
-                    const A = a.split(".").map(Number), B = b.split(".").map(Number);
-                    for (let i = 0; i < Math.max(A.length, B.length); i++) {
-                        if ((A[i] || 0) > (B[i] || 0)) return true;
-                        if ((A[i] || 0) < (B[i] || 0)) return false;
-                    }
-                    return false;
-                };
-                const relevant = blocks.filter(b => isNewer(b.version, fromVer) && !isNewer(b.version, toVer));
-                const buckets: { added: string[]; improved: string[]; fixed: string[]; other: string[]; } =
-                    { added: [], improved: [], fixed: [], other: [] };
-                for (const b of relevant) {
-                    for (const it of b.items) {
-                        const low = it.toLowerCase();
-                        const tag = `${it} (v${b.version})`;
-                        if (low.includes("fix")) buckets.fixed.push(tag);
-                        else if (low.includes("add") || low.includes("initial")) buckets.added.push(tag);
-                        else if (low.includes("improv") || low.includes("updat")) buckets.improved.push(tag);
-                        else buckets.other.push(tag);
-                    }
-                }
-                const changes: Array<{ title: string; type?: "fixed" | "added" | "progress" | "improved"; items: string[]; }> = [];
-                if (buckets.added.length) changes.push({ title: "New Features", type: "added", items: buckets.added });
-                if (buckets.improved.length) changes.push({ title: "Improvements", type: "improved", items: buckets.improved });
-                if (buckets.fixed.length) changes.push({ title: "Bug Fixes", type: "fixed", items: buckets.fixed });
-                if (buckets.other.length) changes.push({ title: "Other Changes", type: "progress", items: buckets.other });
+                const blocks = parseChangelogMarkdown(md);
+                const changes = categorizeChangelogItems(blocks, fromVer, toVer);
                 if (changes.length) openModal(changes);
             } catch {
             }
@@ -880,6 +956,45 @@ const getOptions = (args: any[], defaultOptions = {}) => {
  */
 const makeWebpackException = () => new Error("Module search failed!");
 
+/** Post-processes getBulk results: checks fatal conditions and initializes empty map results. */
+function _getBulkPostProcess(
+    mapping: { all?: boolean; fatal?: boolean; map?: Record<string, (exp: any) => boolean>; }[],
+    result: any[]
+) {
+    for (let index = 0; index < mapping.length; index++) {
+        const query = mapping[index];
+        const exists = index in result;
+        if (query.fatal) {
+            if (query.all && (!Array.isArray(result[index]) || result[index].length === 0)) {
+                throw makeWebpackException();
+            }
+            if (!exists) throw makeWebpackException();
+        }
+        if (query.map && !exists) {
+            result[index] = {};
+        }
+    }
+}
+
+/** Tries to match a module export key against mappers and define a proxy property. */
+function _mapMangledTryMatch(
+    module: any, mappers: Record<string, (exp: any) => boolean>,
+    mapped: Record<string, any>, mapperKeys: string[], searchKey: string
+) {
+    for (const key of mapperKeys) {
+        if (!Object.hasOwn(mappers, key)) continue;
+        if (Object.hasOwn(mapped, key)) continue;
+        if (mappers[key](module[searchKey])) {
+            Object.defineProperty(mapped, key, {
+                get() { return module[searchKey]; },
+                set(value) { module[searchKey] = value; },
+                enumerable: true,
+                configurable: false
+            });
+        }
+    }
+}
+
 export const WebpackHolder = {
     Filters: {
         byDisplayName: name => module => module && module.displayName === name,
@@ -1236,22 +1351,7 @@ export const WebpackHolder = {
         }
 
         // Handle fatal option and map defaults - matches BD PR #2007
-        for (let index = 0; index < mapping.length; index++) {
-            const query = mapping[index];
-            const exists = index in result;
-
-            if (query.fatal) {
-                if (query.all && (!Array.isArray(result[index]) || result[index].length === 0)) {
-                    throw makeWebpackException();
-                }
-                if (!exists) throw makeWebpackException();
-            }
-
-            // Initialize empty object for map queries that found nothing
-            if (query.map && !exists) {
-                result[index] = {};
-            }
-        }
+        _getBulkPostProcess(mapping, result);
 
         return result;
     },
@@ -1266,26 +1366,11 @@ export const WebpackHolder = {
 
         for (const searchKey of moduleKeys) {
             if (!Object.hasOwn(module, searchKey)) continue;
-            for (const key of mapperKeys) {
-                if (!Object.hasOwn(mappers, key)) continue;
-                if (Object.hasOwn(mapped, key)) continue;
-                if (mappers[key](module[searchKey])) {
-                    Object.defineProperty(mapped, key, {
-                        get() { return module[searchKey]; },
-                        set(value) { module[searchKey] = value; },
-                        enumerable: true,
-                        configurable: false
-                    });
-                }
-            }
+            _mapMangledTryMatch(module, mappers, mapped, mapperKeys, searchKey);
         }
         for (const key of mapperKeys) {
             if (!Object.hasOwn(mapped, key)) {
-                Object.defineProperty(mapped, key, {
-                    value: undefined,
-                    enumerable: true,
-                    configurable: false
-                });
+                Object.defineProperty(mapped, key, { value: undefined, enumerable: true, configurable: false });
             }
         }
         return mapped;
@@ -2567,35 +2652,15 @@ export const UIHolder = {
             const r = attachTo.getBoundingClientRect();
             const tt = tooltip.getBoundingClientRect();
             const margin = 8;
-            let x = 0, y = 0, usedSide = side;
             const vw = window.innerWidth, vh = window.innerHeight;
-            const fitsTop = r.top - margin - tt.height >= 0;
-            const fitsBottom = r.bottom + margin + tt.height <= vh;
-            const fitsLeft = r.left - margin - tt.width >= 0;
-            const fitsRight = r.right + margin + tt.width <= vw;
-            if (options.preventFlip) {
-                usedSide = side;
-            } else {
-                if (side === "top" && !fitsTop) usedSide = fitsBottom ? "bottom" : "top";
-                if (side === "bottom" && !fitsBottom) usedSide = fitsTop ? "top" : "bottom";
-                if (side === "left" && !fitsLeft) usedSide = fitsRight ? "right" : "left";
-                if (side === "right" && !fitsRight) usedSide = fitsLeft ? "left" : "right";
-            }
-            switch (usedSide) {
-                case "top":
-                    x = r.left + (r.width - tt.width) / 2;
-                    y = r.top - tt.height - margin; break;
-                case "bottom":
-                    x = r.left + (r.width - tt.width) / 2;
-                    y = r.bottom + margin; break;
-                case "left":
-                    x = r.left - tt.width - margin;
-                    y = r.top + (r.height - tt.height) / 2; break;
-                case "right":
-                default:
-                    x = r.right + margin;
-                    y = r.top + (r.height - tt.height) / 2; break;
-            }
+            const fits = {
+                top: r.top - margin - tt.height >= 0,
+                bottom: r.bottom + margin + tt.height <= vh,
+                left: r.left - margin - tt.width >= 0,
+                right: r.right + margin + tt.width <= vw
+            };
+            const usedSide = _tooltipResolveSide(side, options.preventFlip, fits);
+            let { x, y } = _tooltipComputePosition(usedSide, r, tt, margin);
             x = Math.max(4, Math.min(x, vw - tt.width - 4));
             y = Math.max(4, Math.min(y, vh - tt.height - 4));
             tooltip.style.left = `${x}px`;
@@ -2784,6 +2849,36 @@ export const DOMHolder = {
         if (exists) exists.remove();
     },
 };
+/** Resolves which side to show a tooltip on, flipping if it doesn't fit. */
+function _tooltipResolveSide(
+    side: string, preventFlip: boolean,
+    fits: { top: boolean; bottom: boolean; left: boolean; right: boolean; }
+): string {
+    if (preventFlip) return side;
+    if (side === "top" && !fits.top) return fits.bottom ? "bottom" : "top";
+    if (side === "bottom" && !fits.bottom) return fits.top ? "top" : "bottom";
+    if (side === "left" && !fits.left) return fits.right ? "right" : "left";
+    if (side === "right" && !fits.right) return fits.left ? "left" : "right";
+    return side;
+}
+
+/** Computes x,y position for a tooltip given the resolved side. */
+function _tooltipComputePosition(
+    usedSide: string, r: DOMRect, tt: DOMRect, margin: number
+): { x: number; y: number; } {
+    switch (usedSide) {
+        case "top":
+            return { x: r.left + (r.width - tt.width) / 2, y: r.top - tt.height - margin };
+        case "bottom":
+            return { x: r.left + (r.width - tt.width) / 2, y: r.bottom + margin };
+        case "left":
+            return { x: r.left - tt.width - margin, y: r.top + (r.height - tt.height) / 2 };
+        case "right":
+        default:
+            return { x: r.right + margin, y: r.top + (r.height - tt.height) / 2 };
+    }
+}
+
 class DOMWrapper {
     readonly #label;
     constructor(label) {
@@ -3172,6 +3267,76 @@ class BdApiReImplementationInstance {
                         Object.assign(reactDispatcher, originalDispatcher);
                     }
                 } as React.FC<React.ComponentProps<T>>;
+            },
+            /**
+             * Creates a new NodePatcher instance for patching React component
+             * render output at the element level.
+             *
+             * NodePatcher allows intercepting and modifying the render output of
+             * both class and function components by replacing `ReactElement.type`
+             * with a patched version. Supports memo, forwardRef, and lazy wrappers.
+             *
+             * Call `destroy()` on the returned instance to disable all patches.
+             *
+             * @returns {object} A new NodePatcher instance with `patch()` and `destroy()` methods
+             */
+            createNodePatcher() {
+                const id = Symbol("BetterDiscord.NodePatcher");
+                const cache = new WeakMap<object, any>();
+                let destroyed = false;
+                const R = getGlobalApi().React;
+                const isDestroyed = () => destroyed;
+
+                const patcher = {
+                    patch(node: any, callback: (props: any, res: any, instance?: any) => any) {
+                        if (destroyed) return;
+
+                        const { type } = node;
+
+                        if (cache.has(type)) { node.type = cache.get(type); return; }
+                        if (type[id]) { node.type = type[id]; return; }
+
+                        // Class component path
+                        if (type.prototype?.isReactComponent) {
+                            class ComponentType extends type {
+                                render() {
+                                    const res = super.render();
+                                    if (isDestroyed()) return res;
+                                    return nodePatcherApplyCallback(callback, this.props, res, this);
+                                }
+                            }
+                            nodePatcherCacheAndAssign(cache, id, type, ComponentType, node);
+                            return;
+                        }
+
+                        // Function component path
+                        const FC = getReactComponentType(type);
+
+                        function FunctionType(...args: any[]) {
+                            const res = FC(...args);
+                            const props = args.length === 1 ? args[0] : { ref: args[1], ...args[0] };
+                            if (res instanceof Promise) return nodePatcherHandleAsync(res, isDestroyed, callback, props);
+                            if (isDestroyed()) return res;
+                            return nodePatcherApplyCallback(callback, props, res);
+                        }
+
+                        let newType: any = FunctionType;
+                        if (typeof type === "object") {
+                            newType = nodePatcherWrapExotic(R, type, newType, patcher, callback);
+                        }
+
+                        for (const propName of ["defaultProps", "displayName", "propTypes"]) {
+                            const descriptor = Object.getOwnPropertyDescriptor(type, propName);
+                            if (descriptor) Object.defineProperty(newType, propName, descriptor);
+                        }
+
+                        nodePatcherCacheAndAssign(cache, id, type, newType, node);
+                    },
+
+                    destroy() { destroyed = true; }
+                };
+
+                return patcher;
             }
         };
         return this.#reactUtils;
@@ -3241,18 +3406,6 @@ class BdApiReImplementationInstance {
         findInTree(tree, searchFilter, options = {}) {
             const this_ = getGlobalApi().Utils;
             const { walkable = null, ignore = [] } = options as { walkable: string[], ignore: string[]; };
-            function findInObject(obj) {
-                for (const key in obj) {
-                    if (ignore.includes(key)) continue;
-                    const value = obj[key];
-                    if (searchFilter(value)) return value;
-                    if (typeof value === "object" && value !== null) {
-                        const result = findInObject(value);
-                        if (result !== undefined) return result;
-                    }
-                }
-                return undefined;
-            }
             if (typeof searchFilter === "string") return tree?.[searchFilter];
             if (searchFilter(tree)) return tree;
             if (Array.isArray(tree)) {
@@ -3260,7 +3413,9 @@ class BdApiReImplementationInstance {
                     const result = this_.findInTree(value, searchFilter, { walkable, ignore });
                     if (result !== undefined) return result;
                 }
-            } else if (typeof tree === "object" && tree !== null) {
+                return undefined;
+            }
+            if (typeof tree === "object" && tree !== null) {
                 const keysToWalk = walkable || Object.keys(tree);
                 for (const key of keysToWalk) {
                     if (tree[key] === undefined) continue;
