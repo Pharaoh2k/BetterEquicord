@@ -436,11 +436,13 @@ function parseChangelogMarkdown(md: string): { version: string; items: string[];
     return blocks;
 }
 
+type ChangelogEntryType = "fixed" | "added" | "progress" | "improved";
+
 /** Categorizes changelog items into buckets and returns formatted changes array. */
 function categorizeChangelogItems(
     blocks: { version: string; items: string[]; }[],
     fromVer: string, toVer: string
-): Array<{ title: string; type?: "fixed" | "added" | "progress" | "improved"; items: string[]; }> {
+): Array<{ title: string; type?: ChangelogEntryType; items: string[]; }> {
     const relevant = blocks.filter(b => vcIsNewer(b.version, fromVer) && !vcIsNewer(b.version, toVer));
     const buckets = { added: [] as string[], improved: [] as string[], fixed: [] as string[], other: [] as string[] };
     for (const b of relevant) {
@@ -453,7 +455,7 @@ function categorizeChangelogItems(
             else buckets.other.push(tag);
         }
     }
-    const changes: Array<{ title: string; type?: "fixed" | "added" | "progress" | "improved"; items: string[]; }> = [];
+    const changes: Array<{ title: string; type?: ChangelogEntryType; items: string[]; }> = [];
     if (buckets.added.length) changes.push({ title: "New Features", type: "added", items: buckets.added });
     if (buckets.improved.length) changes.push({ title: "Improvements", type: "improved", items: buckets.improved });
     if (buckets.fixed.length) changes.push({ title: "Bug Fixes", type: "fixed", items: buckets.fixed });
@@ -466,7 +468,7 @@ function tryShowCompatChangelog(name: string, fromVer: string, toVer: string) {
     const entry: any = (Vencord.Plugins.plugins as any)?.[name] ?? null;
     const instance: any = entry?.instance ?? entry?.plugin?.instance ?? entry;
     if (!instance) return;
-    const openModal = (changes: Array<{ title: string; type?: "fixed" | "added" | "progress" | "improved"; items: string[]; }>) => {
+    const openModal = (changes: Array<{ title: string; type?: ChangelogEntryType; items: string[]; }>) => {
         if (!Array.isArray(changes) || changes.length === 0) return;
         getGlobalApi().UI.showChangelogModal({
             title: name,
@@ -1225,6 +1227,12 @@ export const WebpackHolder = {
         return WebpackHolder.getAllByProps(...props);
     },
     getStore(name) {
+        // Primary path: use Flux.Store.getAll() like BD proper does
+        const Flux = WebpackHolder.getModule(m => m.Store?.getAll);
+        if (Flux) {
+            return Flux.Store.getAll().find((store: any) => store.getName?.() === name);
+        }
+        // Fallback: use byStoreName filter if Flux isn't available
         return WebpackHolder.getModule(WebpackHolder.Filters.byStoreName(name));
     },
     /**
@@ -1250,7 +1258,7 @@ export const WebpackHolder = {
             if (!Flux) Flux = WebpackHolder.getModule(m => m.Store?.getAll);
             return Flux;
         };
-        return new Proxy(cache, {
+        const proxy = new Proxy(cache, {
             ownKeys() {
                 const flux = getFlux();
                 if (!flux) return Object.keys(cache);
@@ -1265,9 +1273,8 @@ export const WebpackHolder = {
                 return { enumerable: true, configurable: true };
             },
             get(target, key: string) {
-                if (typeof key !== "string") return undefined;
                 if (target[key] === undefined) {
-                    target[key] = WebpackHolder.getStore(key);
+                    target[key] = WebpackHolder.getStore(key)!;
                 }
                 return target[key];
             },
@@ -1275,6 +1282,7 @@ export const WebpackHolder = {
                 throw new Error("[WebpackModules~Stores] Setting stores is not allowed.");
             }
         });
+        return proxy;
     })(),
     get require() { return Vencord.Webpack.wreq; },
     get modules() {
