@@ -40,6 +40,7 @@ import { Button as VencordButton } from "@components/Button";
 import { Divider } from "@components/Divider";
 import { Paragraph as VencordParagraph } from "@components/Paragraph";
 import { OptionComponentMap } from "@components/settings/tabs/plugins/components";
+import { openInviteModal as VencordOpenInviteModal } from "@utils/discord";
 import { canonicalizeMatch } from "@utils/patches";
 import { OptionType } from "@utils/types";
 import { ChunkIdsRegex, DefaultExtractAndLoadChunksRegex, wreq } from "@webpack";
@@ -1199,6 +1200,7 @@ export const WebpackHolder = {
         return WebpackHolder.getModule(WebpackHolder.Filters.byPrototypeKeys(fields), moreOpts);
     },
     get getByPrototypeKeys() { return WebpackHolder.getByPrototypes; },
+    get getAllByPrototypeKeys() { return WebpackHolder.getAllByPrototypes; },
     getByStrings(...strings) {
         const moreOpts = getOptions(strings);
         return WebpackHolder.getModule(WebpackHolder.Filters.byStrings(...strings.flat()), moreOpts);
@@ -1585,7 +1587,7 @@ export const DataHolder = {
      * @param pluginName Name of the plugin to recache
      * @returns true if recache was successful, false otherwise
      */
-    recache(pluginName: string): boolean {
+    async recache(pluginName: string): Promise<boolean> {
         if (!pluginName) return false;
 
         // Clear in-memory cache
@@ -1732,8 +1734,8 @@ export const HooksHolder = {
         compat_logger.warn("useStateFromStores: Discord hook not found, using non-reactive fallback");
         return selector();
     },
-    useForceUpdate(): () => void {
-        return Vencord.Util.useForceUpdater();
+    useForceUpdate(): [number, (action: any) => void] {
+        return getGlobalApi().React.useReducer((n: number) => n + 1, 0);
     },
     useData<T>(pluginName: string, key: string): T | undefined {
         const { React } = getGlobalApi();
@@ -1758,7 +1760,7 @@ class HooksWrapper {
     ): T {
         return HooksHolder.useStateFromStores(stores, selector, deps, comparator);
     }
-    useForceUpdate(): () => void {
+    useForceUpdate(): [number, (action: any) => void] {
         return HooksHolder.useForceUpdate();
     }
     useData<T>(key: string): T | undefined {
@@ -2434,6 +2436,145 @@ function BD_NOTIF_show(notificationObj: Partial<BdNotification>): { id: string; 
 // End Notification System
 // ============================================================================
 
+// ============================================================================
+// BdTooltip — BD-spec imperative tooltip class
+// ============================================================================
+const BD_TOOLTIP_STYLES = `
+    .bd-layer { position: fixed; z-index: 999999; pointer-events: none; }
+    .bd-tt { opacity: 0; transform: translateY(-2px); transition: opacity .12s ease, transform .12s ease; max-width: 320px; background: #111; color: #fff; font-size: 12px; line-height: 16px; border-radius: 6px; padding: 6px 8px; box-shadow: 0 6px 16px rgba(0,0,0,.4); }
+    .bd-tt.primary  { background: #111; }
+    .bd-tt.info     { background: #2563eb; }
+    .bd-tt.success  { background: #16a34a; }
+    .bd-tt.warn     { background: #d97706; }
+    .bd-tt.danger   { background: #dc2626; }
+`;
+class BdTooltip {
+    node: HTMLElement;
+    label: string | HTMLElement;
+    style: string;
+    side: string;
+    preventFlip: boolean;
+    disabled: boolean;
+    active: boolean;
+    element: HTMLDivElement;
+    tooltipElement: HTMLDivElement;
+    labelElement: HTMLDivElement;
+    observer?: MutationObserver;
+
+    constructor(node: HTMLElement, text: string | HTMLElement, options: any = {}) {
+        const { style = "primary", side = "top", preventFlip = false, disabled = false } = options;
+        this.node = node;
+        this.label = text;
+        this.style = style;
+        this.side = side;
+        this.preventFlip = preventFlip;
+        this.disabled = disabled;
+        this.active = false;
+
+        this.element = document.createElement("div");
+        this.element.className = "bd-layer";
+
+        this.tooltipElement = document.createElement("div");
+        this.tooltipElement.className = `bd-tt ${style}`;
+
+        this.labelElement = document.createElement("div");
+        this.labelElement.className = "bd-tt-inner";
+        if (text instanceof HTMLElement) this.labelElement.append(text);
+        else this.labelElement.textContent = text ?? "";
+
+        this.tooltipElement.append(this.labelElement);
+        this.element.append(this.tooltipElement);
+
+        this.node.addEventListener("mouseenter", () => { if (!this.disabled) this.show(); });
+        this.node.addEventListener("mouseleave", () => { this.hide(); });
+    }
+
+    static create(node: HTMLElement, text: string | HTMLElement, options: any = {}) {
+        return new BdTooltip(node, text, options);
+    }
+
+    get container(): Element { return document.querySelector("#app-mount") ?? document.body; }
+    get canShowAbove(): boolean { return this.node.getBoundingClientRect().top - this.element.offsetHeight >= 0; }
+    get canShowBelow(): boolean { return this.node.getBoundingClientRect().top + this.node.offsetHeight + this.element.offsetHeight <= window.innerHeight; }
+    get canShowLeft(): boolean { return this.node.getBoundingClientRect().left - this.element.offsetWidth >= 0; }
+    get canShowRight(): boolean { return this.node.getBoundingClientRect().left + this.node.offsetWidth + this.element.offsetWidth <= window.innerWidth; }
+
+    hide() {
+        if (!this.active) return;
+        this.active = false;
+        this.element.remove();
+    }
+
+    show() {
+        if (this.active) return;
+        this.active = true;
+        this.container.append(this.element);
+        this._applyPosition();
+        this._setupObserver();
+    }
+
+    _applyPosition() {
+        type Entry = [can: boolean, primary: () => void, fallback: () => void];
+        const map: Record<string, Entry> = {
+            top:    [this.canShowAbove, this.showAbove.bind(this), this.showBelow.bind(this)],
+            bottom: [this.canShowBelow, this.showBelow.bind(this), this.showAbove.bind(this)],
+            left:   [this.canShowLeft, this.showLeft.bind(this), this.showRight.bind(this)],
+            right:  [this.canShowRight, this.showRight.bind(this), this.showLeft.bind(this)],
+        };
+        const [can, primary, fallback] = map[this.side] ?? map.right;
+        (can || this.preventFlip ? primary : fallback)();
+    }
+
+    _setupObserver() {
+        if (this.observer) return;
+        this.observer = new MutationObserver(mutations => {
+            for (const mutation of mutations) {
+                const nodes = Array.from(mutation.removedNodes);
+                if (nodes.includes(this.node) || nodes.some(p => p.contains(this.node))) {
+                    this.hide();
+                    this.observer?.disconnect();
+                    return;
+                }
+            }
+        });
+        this.observer.observe(document.body, { subtree: true, childList: true });
+    }
+
+    showAbove() {
+        this.tooltipElement.classList.add("bd-tt-top");
+        this.element.style.setProperty("top", `${this.node.getBoundingClientRect().top - this.element.offsetHeight - 10}px`);
+        this.centerHorizontally();
+    }
+
+    showBelow() {
+        this.tooltipElement.classList.add("bd-tt-bottom");
+        this.element.style.setProperty("top", `${this.node.getBoundingClientRect().top + this.node.offsetHeight + 10}px`);
+        this.centerHorizontally();
+    }
+
+    showLeft() {
+        this.tooltipElement.classList.add("bd-tt-left");
+        this.element.style.setProperty("left", `${this.node.getBoundingClientRect().left - this.element.offsetWidth - 10}px`);
+        this.centerVertically();
+    }
+
+    showRight() {
+        this.tooltipElement.classList.add("bd-tt-right");
+        this.element.style.setProperty("left", `${this.node.getBoundingClientRect().left + this.node.offsetWidth + 10}px`);
+        this.centerVertically();
+    }
+
+    centerHorizontally() {
+        const center = this.node.getBoundingClientRect().left + (this.node.offsetWidth / 2);
+        this.element.style.setProperty("left", `${center - (this.element.offsetWidth / 2)}px`);
+    }
+
+    centerVertically() {
+        const center = this.node.getBoundingClientRect().top + (this.node.offsetHeight / 2);
+        this.element.style.setProperty("top", `${center - (this.element.offsetHeight / 2)}px`);
+    }
+}
+
 export const UIHolder = {
     alert(title: string, content: any) {
         return this.showConfirmationModal(title, content, { cancelText: null });
@@ -2636,81 +2777,21 @@ export const UIHolder = {
         };
     },
     createTooltip(attachTo: HTMLElement, label: string, opts: any = {}) {
-        const options = {
-            style: opts.style ?? "primary",
-            side: opts.side ?? "top",
-            preventFlip: !!opts.preventFlip,
-            disabled: !!opts.disabled
-        };
-        getGlobalApi().DOM.addStyle("bd-tooltip-styles", `
-            .bd-tt { position: fixed; z-index: 999999; pointer-events: none; opacity: 0; transform: translateY(-2px); transition: opacity .12s ease, transform .12s ease; }
-            .bd-tt.visible { opacity: 1; transform: translateY(0); }
-            .bd-tt-inner { max-width: 320px; background: #111; color: #fff; font-size: 12px; line-height: 16px; border-radius: 6px; padding: 6px 8px; box-shadow: 0 6px 16px rgba(0,0,0,.4); }
-            .bd-tt.primary  .bd-tt-inner { background: #111; }
-            .bd-tt.info     .bd-tt-inner { background: #2563eb; }
-            .bd-tt.success  .bd-tt-inner { background: #16a34a; }
-            .bd-tt.warn     .bd-tt-inner { background: #d97706; }
-            .bd-tt.danger   .bd-tt-inner { background: #dc2626; }
-        `);
-        const tooltip = document.createElement("div");
-        tooltip.className = `bd-tt ${options.style}`;
-        const labelEl = document.createElement("div");
-        labelEl.className = "bd-tt-inner";
-        labelEl.textContent = label ?? "";
-        tooltip.appendChild(labelEl);
-        const place = (side: string) => {
-            const r = attachTo.getBoundingClientRect();
-            const tt = tooltip.getBoundingClientRect();
-            const margin = 8;
-            const vw = window.innerWidth, vh = window.innerHeight;
-            const fits = {
-                top: r.top - margin - tt.height >= 0,
-                bottom: r.bottom + margin + tt.height <= vh,
-                left: r.left - margin - tt.width >= 0,
-                right: r.right + margin + tt.width <= vw
-            };
-            const usedSide = _tooltipResolveSide(side, options.preventFlip, fits);
-            let { x, y } = _tooltipComputePosition(usedSide, r, tt, margin);
-            x = Math.max(4, Math.min(x, vw - tt.width - 4));
-            y = Math.max(4, Math.min(y, vh - tt.height - 4));
-            tooltip.style.left = `${x}px`;
-            tooltip.style.top = `${y}px`;
-        };
-        let visible = false;
-        const show = () => {
-            if (!document.body.contains(tooltip)) document.body.appendChild(tooltip);
-            tooltip.classList.add("visible");
-            place(options.side);
-            visible = true;
-        };
-        const hide = () => {
-            tooltip.classList.remove("visible");
-            visible = false;
-        };
-        const destroy = () => {
-            hide();
-            tooltip.remove();
-            attachTo.removeEventListener("mouseenter", onEnter);
-            attachTo.removeEventListener("mouseleave", onLeave);
-            attachTo.removeEventListener("mousemove", onMove);
-        };
-        const onEnter = () => !options.disabled && show();
-        const onLeave = () => hide();
-        const onMove = () => { if (visible) place(options.side); };
-        if (!options.disabled) {
-            attachTo.addEventListener("mouseenter", onEnter);
-            attachTo.addEventListener("mouseleave", onLeave);
-            attachTo.addEventListener("mousemove", onMove);
-        }
-        return {
-            element: tooltip,
-            labelElement: labelEl,
-            tooltipElement: tooltip,
-            show, hide, destroy
-        };
+        getGlobalApi().DOM.addStyle("bd-tooltip-styles", BD_TOOLTIP_STYLES);
+        return new BdTooltip(attachTo, label, opts);
     },
     showChangelogModal(options) {
         return _showChangelogModal(options);
+    },
+    async showInviteModal(inviteCode: string): Promise<void> {
+        const tester = /\.gg\/(.*)$/;
+        const m = tester.exec(inviteCode);
+        if (m) inviteCode = m[1];
+        try {
+            await VencordOpenInviteModal(inviteCode);
+        } catch (e) {
+            compat_logger.error("[UI.showInviteModal] Failed to open invite modal:", e);
+        }
     },
     buildSettingItem(setting: any) {
         if (!setting?.id || !setting?.type) {
@@ -2788,6 +2869,53 @@ export const UIHolder = {
     }
 };
 export const DOMHolder = {
+    get screenWidth() { return Math.max(document.documentElement.clientWidth, window.innerWidth || 0); },
+    get screenHeight() { return Math.max(document.documentElement.clientHeight, window.innerHeight || 0); },
+    animate(update: (p: number) => void, duration: number, options: { timing?: (t: number) => number; } = {}) {
+        const timing = options.timing ?? (t => t);
+        const start = performance.now();
+        let id = requestAnimationFrame(function tick(time) {
+            let t = (time - start) / duration;
+            if (t > 1) t = 1;
+            update(timing(t));
+            if (t < 1) id = requestAnimationFrame(tick);
+        });
+        return () => cancelAnimationFrame(id);
+    },
+    onAdded(selector: string, callback: (el: Element) => void): (() => void) | void {
+        const existing = document.body.querySelector(selector);
+        if (existing) return callback(existing);
+        const observer = new MutationObserver(mutations => {
+            for (const mutation of mutations) {
+                for (const node of mutation.addedNodes) {
+                    if (node.nodeType !== 1) continue;
+                    const el = node as Element;
+                    const match = el.matches(selector) ? el : el.querySelector(selector);
+                    if (match) {
+                        observer.disconnect();
+                        callback(match);
+                        return;
+                    }
+                }
+            }
+        });
+        observer.observe(document.body, { subtree: true, childList: true });
+        return () => observer.disconnect();
+    },
+    onRemoved(node: HTMLElement, callback: () => void): () => void {
+        const observer = new MutationObserver(mutations => {
+            for (const mutation of mutations) {
+                const nodes = Array.from(mutation.removedNodes);
+                if (nodes.includes(node) || nodes.some(p => p.contains(node))) {
+                    observer.disconnect();
+                    callback();
+                    return;
+                }
+            }
+        });
+        observer.observe(document.body, { subtree: true, childList: true });
+        return () => observer.disconnect();
+    },
     addStyle(id, css) {
         id = id.replaceAll(/(?:^[^a-z]+)|(?:[^\w-]+)/gi, "-");
         const style: HTMLElement =
@@ -2805,12 +2933,12 @@ export const DOMHolder = {
             ?.querySelector(`#${id}`);
         if (exists) exists.remove();
     },
-    createElement(tag, options: any = {}, child = null) {
+    createElement(tag, options: any = {}, ...children: (string | Node)[]) {
         const { className, id, target } = options;
         const element = document.createElement(tag);
         if (className) element.className = className;
         if (id) element.id = id;
-        if (child) element.append(child);
+        if (children.length) element.append(...children);
         if (target) document.querySelector(target).append(element);
         return element;
     },
@@ -2859,35 +2987,6 @@ export const DOMHolder = {
         if (exists) exists.remove();
     },
 };
-/** Resolves which side to show a tooltip on, flipping if it doesn't fit. */
-function _tooltipResolveSide(
-    side: string, preventFlip: boolean,
-    fits: { top: boolean; bottom: boolean; left: boolean; right: boolean; }
-): string {
-    if (preventFlip) return side;
-    if (side === "top" && !fits.top) return fits.bottom ? "bottom" : "top";
-    if (side === "bottom" && !fits.bottom) return fits.top ? "top" : "bottom";
-    if (side === "left" && !fits.left) return fits.right ? "right" : "left";
-    if (side === "right" && !fits.right) return fits.left ? "left" : "right";
-    return side;
-}
-
-/** Computes x,y position for a tooltip given the resolved side. */
-function _tooltipComputePosition(
-    usedSide: string, r: DOMRect, tt: DOMRect, margin: number
-): { x: number; y: number; } {
-    switch (usedSide) {
-        case "top":
-            return { x: r.left + (r.width - tt.width) / 2, y: r.top - tt.height - margin };
-        case "bottom":
-            return { x: r.left + (r.width - tt.width) / 2, y: r.bottom + margin };
-        case "left":
-            return { x: r.left - tt.width - margin, y: r.top + (r.height - tt.height) / 2 };
-        case "right":
-        default:
-            return { x: r.right + margin, y: r.top + (r.height - tt.height) / 2 };
-    }
-}
 
 class DOMWrapper {
     readonly #label;
@@ -2914,8 +3013,17 @@ class DOMWrapper {
         }
         return DOMHolder.removeStyle(id);
     }
-    get createElement() {
-        return DOMHolder.createElement;
+    get createElement() { return DOMHolder.createElement.bind(DOMHolder); }
+    get screenWidth() { return DOMHolder.screenWidth; }
+    get screenHeight() { return DOMHolder.screenHeight; }
+    animate(update: (p: number) => void, duration: number, options?: { timing?: (t: number) => number; }) {
+        return DOMHolder.animate(update, duration, options);
+    }
+    onAdded(selector: string, callback: (el: Element) => void) {
+        return DOMHolder.onAdded(selector, callback);
+    }
+    onRemoved(node: HTMLElement, callback: () => void) {
+        return DOMHolder.onRemoved(node, callback);
     }
 }
 const components = {
@@ -2925,6 +3033,23 @@ const components = {
         return components.Spinner_holder;
     },
 };
+function _findInTreeWalk(tree: any, searchFilter: any, opts: { walkable?: string[] | null; }): any {
+    if (Array.isArray(tree)) {
+        for (const value of tree) {
+            const r = _findInTreeWalk(value, searchFilter, opts);
+            if (r !== undefined) return r;
+        }
+        return undefined;
+    }
+    if (typeof tree !== "object" || tree === null) return undefined;
+    const keys = opts.walkable ?? Object.keys(tree);
+    for (const key of keys) {
+        const r = _findInTreeWalk(tree[key], searchFilter, opts);
+        if (r !== undefined) return r;
+    }
+    return undefined;
+}
+
 class BdApiReImplementationInstance {
     readonly #patcher: PatcherWrapper | typeof Patcher;
     readonly #data: DataWrapper | typeof DataHolder;
@@ -2976,6 +3101,7 @@ class BdApiReImplementationInstance {
         return this.#hooks;
     }
     get Plugins() { return PluginsHolder; }
+    get Tooltip() { return BdTooltip; }
     Components = {
         get Tooltip() {
             return getGlobalApi().Webpack.getModule(
@@ -3413,27 +3539,10 @@ class BdApiReImplementationInstance {
             };
             return args.flatMap(processArg).join(" ");
         }) as (...args: any[]) => string,
-        findInTree(tree, searchFilter, options = {}) {
-            const this_ = getGlobalApi().Utils;
-            const { walkable = null, ignore = [] } = options as { walkable: string[], ignore: string[]; };
+        findInTree(tree, searchFilter, options: { walkable?: string[] | null; ignore?: string[]; } = {}) {
             if (typeof searchFilter === "string") return tree?.[searchFilter];
             if (searchFilter(tree)) return tree;
-            if (Array.isArray(tree)) {
-                for (const value of tree) {
-                    const result = this_.findInTree(value, searchFilter, { walkable, ignore });
-                    if (result !== undefined) return result;
-                }
-                return undefined;
-            }
-            if (typeof tree === "object" && tree !== null) {
-                const keysToWalk = walkable || Object.keys(tree);
-                for (const key of keysToWalk) {
-                    if (tree[key] === undefined) continue;
-                    const result = this_.findInTree(tree[key], searchFilter, { walkable, ignore });
-                    if (result !== undefined) return result;
-                }
-            }
-            return undefined;
+            return _findInTreeWalk(tree, searchFilter, options);
         },
         getNestedValue(obj: any, path: string) {
             const properties = path.split(".");
