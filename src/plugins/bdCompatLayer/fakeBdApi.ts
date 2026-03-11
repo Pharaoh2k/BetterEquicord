@@ -40,7 +40,9 @@ import { Button as VencordButton } from "@components/Button";
 import { Divider } from "@components/Divider";
 import { Paragraph as VencordParagraph } from "@components/Paragraph";
 import { OptionComponentMap } from "@components/settings/tabs/plugins/components";
+import { canonicalizeMatch } from "@utils/patches";
 import { OptionType } from "@utils/types";
+import { ChunkIdsRegex, DefaultExtractAndLoadChunksRegex, wreq } from "@webpack";
 import { lodash } from "@webpack/common";
 
 import { ColorPickerSettingComponent } from "./components/ColorPickerSetting";
@@ -3464,6 +3466,30 @@ class BdApiReImplementationInstance {
             if (aParsed.preRelease && !bParsed.preRelease) return 1;
             if (!aParsed.preRelease && bParsed.preRelease) return -1;
             return 0;
+        },
+        async forceLoad(id: string | number): Promise<any[]> {
+            if (wreq?.m[id] == null) return [];
+            const text = String(wreq.m[id]);
+            const loadedModules: any[] = [];
+            const globalMatcher = new RegExp(canonicalizeMatch(DefaultExtractAndLoadChunksRegex).source, "g");
+            let match: RegExpExecArray | null;
+            while ((match = globalMatcher.exec(text)) !== null) {
+                const [, rawChunkIds, entryPointId] = match;
+                if (entryPointId == null) continue;
+                const numEntry = Number(entryPointId);
+                const entryPoint: any = Number.isNaN(numEntry) ? entryPointId : numEntry;
+                if (rawChunkIds) {
+                    const chunkIds = Array.from(rawChunkIds.matchAll(new RegExp(ChunkIdsRegex.source, "g"))).map(m => {
+                        const n = Number(m[1]);
+                        return Number.isNaN(n) ? m[1] : n;
+                    });
+                    await Promise.all(chunkIds.map(cid => wreq.e(cid as any)));
+                }
+                if (wreq.m[entryPoint] != null) {
+                    loadedModules.push(wreq(entryPoint));
+                }
+            }
+            return loadedModules;
         },
         extend: ObjectMerger.perform.bind(ObjectMerger),
         debounce: lodash.debounce,
