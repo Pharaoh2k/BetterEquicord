@@ -293,7 +293,7 @@ export function createContextMenu(Patcher) {
                 props.checked = active;
                 props.action = function (ev) {
                     originalAction(ev);
-                    doToggle(!active);
+                    if (!ev.defaultPrevented) doToggle(!active);
                 };
             }
 
@@ -315,9 +315,9 @@ export function createContextMenu(Patcher) {
         }
 
         buildMenu(setup) {
-            const children = this.buildMenuChildren(setup);
+            const children = () => this.buildMenuChildren(setup);
             return props => {
-                return React.createElement(MenuComponents.Menu, props, children);
+                return React.createElement(MenuComponents.Menu, props, children());
             };
         }
 
