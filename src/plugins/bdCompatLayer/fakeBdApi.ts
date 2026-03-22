@@ -1221,8 +1221,9 @@ export const WebpackHolder = {
         const moreOpts = getOptions(strings);
         return WebpackHolder.getModule(WebpackHolder.Filters.bySource(...strings), moreOpts);
     },
-    getAllBySource(match) {
-        return WebpackHolder.getModule(WebpackHolder.Filters.bySource(match), { first: false });
+    getAllBySource(...searches) {
+        const moreOpts = getOptions(searches);
+        return WebpackHolder.getModule(WebpackHolder.Filters.bySource(...searches), Object.assign({}, moreOpts, { first: false }));
     },
     findByUniqueProperties(props) {
         return WebpackHolder.getByProps(...props);
