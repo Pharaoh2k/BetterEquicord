@@ -3034,19 +3034,26 @@ const components = {
         return components.Spinner_holder;
     },
 };
-function _findInTreeWalk(tree: any, searchFilter: any, opts: { walkable?: string[] | null; }): any {
+function _findInTreeWalk(tree: any, searchFilter: any, opts: { walkable?: string[] | null; ignore?: string[]; }): any {
+    if (typeof searchFilter === "string") {
+        if (tree != null && Object.prototype.hasOwnProperty.call(tree, searchFilter)) return tree[searchFilter];
+    } else if (searchFilter(tree)) {
+        return tree;
+    }
+    if (typeof tree !== "object" || tree == null) return undefined;
+    const ignore = opts.ignore ?? [];
     if (Array.isArray(tree)) {
         for (const value of tree) {
             const r = _findInTreeWalk(value, searchFilter, opts);
             if (r !== undefined) return r;
         }
-        return undefined;
-    }
-    if (typeof tree !== "object" || tree === null) return undefined;
-    const keys = opts.walkable ?? Object.keys(tree);
-    for (const key of keys) {
-        const r = _findInTreeWalk(tree[key], searchFilter, opts);
-        if (r !== undefined) return r;
+    } else {
+        const keys = opts.walkable ?? Object.keys(tree);
+        for (const key of keys) {
+            if (typeof tree[key] === "undefined" || ignore.includes(key)) continue;
+            const r = _findInTreeWalk(tree[key], searchFilter, opts);
+            if (r !== undefined) return r;
+        }
     }
     return undefined;
 }
@@ -3565,8 +3572,6 @@ class BdApiReImplementationInstance {
             return args.flatMap(processArg).join(" ");
         }) as (...args: any[]) => string,
         findInTree(tree, searchFilter, options: { walkable?: string[] | null; ignore?: string[]; } = {}) {
-            if (typeof searchFilter === "string") return tree?.[searchFilter];
-            if (searchFilter(tree)) return tree;
             return _findInTreeWalk(tree, searchFilter, options);
         },
         getNestedValue(obj: any, path: string) {
