@@ -3177,6 +3177,30 @@ class BdApiReImplementationInstance {
                 },
             });
         },
+        DropdownInput(props: { value?: any, options: { id?: string, value: any, label: string; }[], style?: "transparent" | "default", onChange?: (newValue: any) => void, disabled?: boolean; }) {
+            const { React } = getGlobalApi();
+            const { SearchableSelect } = Vencord.Webpack.Common;
+            return React.createElement(SearchableSelect, {
+                options: props.options,
+                value: props.value ?? props.options[0]?.value,
+                onChange: (v: any) => props.onChange?.(v),
+                isDisabled: props.disabled,
+                closeOnSelect: true,
+            });
+        },
+        KeybindInput(props: { value: string[], onChange?: (newValue: string[]) => void, max?: number, clearable?: boolean, disabled?: boolean; }) {
+            const { React } = getGlobalApi();
+            return React.createElement(KeybindSettingComponent, {
+                id: `bd_compat-keybind-${Date.now()}`,
+                onChange: (v: string[]) => props.onChange?.(v),
+                option: {
+                    value: props.value,
+                    max: props.max ?? 4,
+                    clearable: props.clearable ?? false,
+                    disabled: props.disabled,
+                },
+            });
+        },
         get ErrorBoundary() {
             const VencordEB = Vencord.Components.ErrorBoundary;
             return (props: any) => {
