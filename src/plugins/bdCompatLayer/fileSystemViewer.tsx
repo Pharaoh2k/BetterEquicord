@@ -2128,6 +2128,7 @@ async function ensureMonaco(): Promise<any> {
     try {
         // @ts-ignore
         let mod = await import("monaco-editor/esm/vs/editor/editor.api");
+        // @ts-ignore
         await import("monaco-editor/esm/vs/editor/contrib/find/browser/findController");
         // @ts-ignore
         if (mod?.editor == null && mod?.default) mod = mod.default;
