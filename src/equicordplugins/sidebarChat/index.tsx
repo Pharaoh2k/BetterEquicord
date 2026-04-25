@@ -334,11 +334,16 @@ export default definePlugin({
                     replace: "const vc_SidebarChat=$self.renderSidebar();$&"
                 },
                 {
-                    match: /return(\(0,\i\.jsxs?\)\(\i\.\i,{}\))}/,
+                    match: /return(\(0,\i\.jsxs?\)\(\i,{}\))}/,
                     replace: "return [$1, vc_SidebarChat]}"
                 },
                 {
-                    match: /(case \i\.\i.+?return)(.+?);(?=.+?params\.messageId)(?<=guild_products".+?)/g,
+                    match: /(?<=guild_products.{0,1600})(case \i\.\i.{0,50}return)(.+?\}\));(?=.+?params\.messageId)/g,
+                    replace: "$1[$2, vc_SidebarChat];",
+                    predicate: () => settings.store.patchCommunity
+                },
+                {
+                    match: /(case \i\.\i\.GAME_SERVERS:.{0,50}\.CHANNEL.{0,25}return)(.*?);/,
                     replace: "$1[$2, vc_SidebarChat];",
                     predicate: () => settings.store.patchCommunity
                 }

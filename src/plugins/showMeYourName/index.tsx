@@ -1063,6 +1063,12 @@ const settings = definePluginSettings({
         default: false,
         hidden: true
     },
+    alwaysHaveGradientsActive: {
+        type: OptionType.BOOLEAN,
+        description: "Enables gradients always on in dms and such instead of just on hover",
+        default: false,
+        restartNeeded: true
+    },
 });
 
 export default definePlugin({
@@ -1138,10 +1144,18 @@ export default definePlugin({
             // Track hovering on messages to animate gradients.
             // Attach the group ID to their messages to allow animating gradients within a group.
             find: "CUSTOM_GIFT?\"\":",
-            replacement: {
-                match: /(isHovered:(\i).{0,1300})(let \i=\i.id===\i,\i=)/,
-                replace: "$1arguments[0].message.showMeYourNameGroupId=!!arguments[0].groupId?`g-${arguments[0].groupId}`:null;$self.handleHoveringMessage(arguments[0].message,$2);$3"
-            },
+            replacement: [
+                {
+                    match: /(hasHovered:\i,isHovered:(\i).{0,2000})(let \i=\i.id===\i,\i=)/,
+                    replace: "$1arguments[0].message.showMeYourNameGroupId=!!arguments[0].groupId?`g-${arguments[0].groupId}`:null;$self.handleHoveringMessage(arguments[0].message,$2);$3",
+                    predicate: () => !settings.store.alwaysHaveGradientsActive
+                },
+                {
+                    match: /(keyboardModeEnabled.{0,20}&&\i,\i=\i\|\|(\i).*?)(let \i=\i.id===\i,\i=)/,
+                    replace: "$1arguments[0].message.showMeYourNameGroupId=!!arguments[0].groupId?`g-${arguments[0].groupId}`:null;$self.handleHoveringMessage(arguments[0].message,$2);$3",
+                    predicate: () => settings.store.alwaysHaveGradientsActive
+                }
+            ],
         },
         {
             // Replace names in mentions.
@@ -1179,8 +1193,8 @@ export default definePlugin({
             // Replace names in profile popouts.
             find: "shouldWrap:!0,loop:!0,inProfile:!0",
             replacement: {
-                match: /(tags:\i,)nickname:(\i)/,
-                replace: "$1showMeYourNameNickname:$2=$self.getTypingMemberListProfilesReactionsVoiceNameText({...arguments[0],type:\"profilesPopout\"})??(arguments[0].nickname)"
+                match: /displayName:(\i),(?=trailing:\i,|size:\i=|displayNameSize:\i)/g,
+                replace: "showMeYourNameNickname:$1=$self.getTypingMemberListProfilesReactionsVoiceNameText({...arguments[0],type:\"profilesPopout\"})??(arguments[0].nickname),"
             },
         },
         {
