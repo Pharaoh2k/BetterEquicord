@@ -6,7 +6,7 @@
 
 import { normalizeCorsProxyUrl, toProxiedUrl } from "@equicordplugins/fileUpload/constants";
 import { settings } from "@equicordplugins/fileUpload/settings";
-import { serviceLabels, ServiceType, ShareXUploaderConfig, UploadResponse } from "@equicordplugins/fileUpload/types";
+import { fallbackServiceOrder, serviceLabels, ServiceType, ShareXUploaderConfig, UploadResponse } from "@equicordplugins/fileUpload/types";
 import { copyToClipboard } from "@utils/clipboard";
 import { insertTextIntoChatInputBox } from "@utils/discord";
 import { Logger } from "@utils/Logger";
@@ -75,6 +75,18 @@ function isUploadCancelledError(error: unknown): boolean {
 
     const message = error.message.toLowerCase();
     return message.includes("cancelled") || message.includes("canceled") || message.includes("aborted") || message.includes("aborterror");
+}
+
+function getFallbackServices(): ServiceType[] {
+    const configuredOrder = (settings.store as { fallbackOrder?: string; }).fallbackOrder || fallbackServiceOrder.join(",");
+    const services = configuredOrder
+        .split(/[\n,]/)
+        .map(service => service.trim())
+        .filter((service): service is ServiceType => Object.values(ServiceType).includes(service as ServiceType));
+
+    return services.length === fallbackServiceOrder.length && new Set(services).size === fallbackServiceOrder.length
+        ? services
+        : fallbackServiceOrder;
 }
 
 function emitUploadState() {
@@ -362,7 +374,10 @@ export function isConfigured(): boolean {
         case ServiceType.BUZZHEAVIER:
         case ServiceType.TEMPSH:
         case ServiceType.FILEBIN:
+        case ServiceType.PIXELDRAIN:
             return true;
+        case ServiceType.PIXELVAULT:
+            return Boolean((settings.store as { pixelVaultKey?: string; }).pixelVaultKey);
         case ServiceType.SHAREX:
             try {
                 parseShareXConfigFromSettings();
@@ -647,6 +662,98 @@ async function uploadToFilebin(fileBlob: Blob, filename: string): Promise<string
     return `https://filebin.net/${binId}/${encodeURIComponent(filename)}`;
 }
 
+async function uploadToPixelVault(fileBlob: Blob, filename: string): Promise<string> {
+    const { pixelVaultKey } = settings.store as { pixelVaultKey?: string; };
+
+    if (!pixelVaultKey?.trim()) {
+        throw new Error("PixelVault upload key is required");
+    }
+
+    if (Native) {
+        const result = await Native.uploadToPixelVault(await fileBlob.arrayBuffer(), filename, pixelVaultKey.trim());
+
+        if (!result.success) {
+            throw new Error(result.error || "Upload failed");
+        }
+
+        if (!result.url) {
+            throw new Error("No URL returned from upload");
+        }
+
+        return result.url;
+    }
+
+    const formData = new FormData();
+    formData.append("file", fileBlob, filename);
+
+    const response = await fetchWithTimeout("https://pixelvault.co/", {
+        method: "POST",
+        headers: {
+            Authorization: pixelVaultKey.trim()
+        },
+        body: formData
+    });
+
+    const text = await response.text();
+    let data: { resource?: string; url?: string; } | null = null;
+
+    try {
+        data = text ? JSON.parse(text) : null;
+    } catch {
+        data = null;
+    }
+
+    if (!response.ok) {
+        throw new Error(`Upload failed: ${response.status} ${text}`);
+    }
+
+    const url = data?.resource || data?.url || text.trim();
+    if (!url) {
+        throw new Error("No URL returned from upload");
+    }
+
+    return url;
+}
+
+async function uploadToPixelDrain(fileBlob: Blob, filename: string): Promise<string> {
+    const { pixelDrainKey } = settings.store as { pixelDrainKey?: string; };
+
+    if (Native) {
+        const result = await Native.uploadToPixelDrain(await fileBlob.arrayBuffer(), filename, pixelDrainKey?.trim() || undefined);
+        if (!result.success || !result.url) throw new Error(result.error || "No URL returned from upload");
+        return result.url;
+    }
+
+    const headers: Record<string, string> = {};
+    if (pixelDrainKey?.trim()) {
+        headers.Authorization = `Basic ${btoa(`:${pixelDrainKey.trim()}`)}`;
+    }
+
+    const response = await fetchWithTimeout(`https://pixeldrain.com/api/file/${encodeURIComponent(filename)}`, {
+        method: "PUT",
+        headers,
+        body: fileBlob
+    });
+
+    const text = await response.text();
+    let data: { id?: string; success?: boolean; message?: string; } | null = null;
+    try {
+        data = text ? JSON.parse(text) : null;
+    } catch {
+        data = null;
+    }
+
+    if (!response.ok) {
+        throw new Error(data?.message || `Upload failed: ${response.status} ${text}`);
+    }
+
+    if (!data?.id) {
+        throw new Error(data?.message || "No URL returned from upload");
+    }
+
+    return `https://pixeldrain.com/u/${data.id}`;
+}
+
 async function uploadToService(serviceType: ServiceType, fileBlob: Blob, filename: string): Promise<string> {
     switch (serviceType) {
         case ServiceType.ZIPLINE:
@@ -675,21 +782,14 @@ async function uploadToService(serviceType: ServiceType, fileBlob: Blob, filenam
             return uploadToTempSh(fileBlob, filename);
         case ServiceType.FILEBIN:
             return uploadToFilebin(fileBlob, filename);
+        case ServiceType.PIXELVAULT:
+            return uploadToPixelVault(fileBlob, filename);
+        case ServiceType.PIXELDRAIN:
+            return uploadToPixelDrain(fileBlob, filename);
         default:
             throw new Error("Unknown service type");
     }
 }
-
-const FALLBACK_SERVICES: ServiceType[] = [
-    ServiceType.CATBOX,
-    ServiceType.LITTERBOX,
-    ServiceType.ZEROX0,
-    ServiceType.TMPFILES,
-    ServiceType.GOFILE,
-    ServiceType.BUZZHEAVIER,
-    ServiceType.TEMPSH,
-    ServiceType.FILEBIN
-];
 
 const EXE_BLOCKED_SERVICES = new Set<ServiceType>([
     ServiceType.CATBOX,
@@ -768,12 +868,12 @@ function buildUploadOrder(primary: ServiceType, fileName: string): ServiceType[]
     const disableFallbacks = Boolean((settings.store as { disableFallbacks?: boolean; }).disableFallbacks);
     const effectivePrimary = normalizePrimaryService(primary, fileName);
 
-    if (disableFallbacks || effectivePrimary === ServiceType.SHAREX || effectivePrimary === ServiceType.S3 || effectivePrimary === ServiceType.ZIPLINE || effectivePrimary === ServiceType.NEST || effectivePrimary === ServiceType.EZHOST) {
-        return [effectivePrimary];
+    const order: ServiceType[] = [effectivePrimary];
+    if (disableFallbacks) {
+        return order;
     }
 
-    const order: ServiceType[] = [effectivePrimary];
-    for (const fallback of FALLBACK_SERVICES) {
+    for (const fallback of getFallbackServices()) {
         if (fallback !== effectivePrimary && canServiceHandleFile(fallback, fileName)) {
             order.push(fallback);
         }
@@ -794,6 +894,14 @@ function finalizeUploadedUrl(url: string): string {
     } catch {
         return url;
     }
+}
+
+function getFilenameExtension(filename: string): string | undefined {
+    const dotIndex = filename.lastIndexOf(".");
+    if (dotIndex < 1 || dotIndex === filename.length - 1) return undefined;
+
+    const ext = filename.slice(dotIndex + 1).toLowerCase();
+    return ext.length <= 10 ? ext : undefined;
 }
 
 async function notifyUploadSuccess(finalUrl: string): Promise<void> {
@@ -902,8 +1010,20 @@ async function uploadWithFallbacks(fileBlob: Blob, filename: string, primary: Se
 }
 
 async function normalizeUploadBlob(blob: Blob, sourceUrl?: string): Promise<{ blob: Blob; filename: string; }> {
+    let sourceFileName = "";
+    if (blob instanceof File && blob.name) {
+        sourceFileName = blob.name;
+    } else if (sourceUrl && URL.canParse(sourceUrl)) {
+        const segment = new URL(sourceUrl).pathname.split("/").pop();
+        if (segment) sourceFileName = decodeURIComponent(segment);
+    }
+
     const extGuessFromSource = sourceUrl ? getUrlExtension(sourceUrl) : undefined;
-    let ext = await getExtensionFromBytes(blob) || getExtensionFromMime(blob.type) || extGuessFromSource || "png";
+    let ext = await getExtensionFromBytes(blob)
+        || getExtensionFromMime(blob.type)
+        || getFilenameExtension(sourceFileName)
+        || extGuessFromSource
+        || "bin";
 
     if (ext === "apng" && settings.store.apngToGif) {
         const gifBlob = await convertApngToGif(blob);
@@ -917,14 +1037,6 @@ async function normalizeUploadBlob(blob: Blob, sourceUrl?: string): Promise<{ bl
 
     const mimeType = getMimeFromExtension(ext);
     const { preserveOriginalFilename } = settings.store;
-    let sourceFileName = "";
-    if (blob instanceof File && blob.name) {
-        sourceFileName = blob.name;
-    } else if (sourceUrl && URL.canParse(sourceUrl)) {
-        const segment = new URL(sourceUrl).pathname.split("/").pop();
-        if (segment) sourceFileName = decodeURIComponent(segment);
-    }
-
     let filename = `upload.${ext}`;
     if (preserveOriginalFilename && sourceFileName) {
         const dotIndex = sourceFileName.lastIndexOf(".");
