@@ -21,7 +21,7 @@ import OpenInAppPlugin from "@plugins/openInApp";
 import { findByProps, findByPropsLazy, proxyLazyWebpack } from "@webpack";
 import { Flux, FluxDispatcher } from "@webpack/common";
 
-import { settings } from ".";
+import { settings } from "../settings";
 
 export interface Track {
     id: string;
