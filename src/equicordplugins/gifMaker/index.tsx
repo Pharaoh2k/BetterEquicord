@@ -5,7 +5,7 @@
  */
 
 import { NavContextMenuPatchCallback } from "@api/ContextMenu";
-import { definePluginSettings } from "@api/Settings";
+import { definePluginSettings, migratePluginSettings } from "@api/Settings";
 import { Button } from "@components/Button";
 import { EquicordDevs } from "@utils/constants";
 import { classNameFactory } from "@utils/css";
@@ -23,7 +23,7 @@ import css from "./styles.css?managed";
 import { DEFAULT_OPTIONS, type GifMakerOptions, type GoogleFontMetadata } from "./types";
 import { clamp, getInitialSize, getMediaInfo } from "./utils/contextMenu";
 import { cleanupBlobUrl, createGif, loadImage, loadVideo } from "./utils/encoder";
-import { applyTenorMp4Fix, collectCandidateUrls, isLikelyVideoUrl, normalizeUrl, orderCandidateUrls } from "./utils/gifPicker";
+import { collectCandidateUrls, ensureGifUrl, isLikelyVideoUrl, normalizeUrl, orderCandidateUrls, stripDiscordFormatParam } from "./utils/gifPicker";
 
 const cl = classNameFactory("vc-gifmaker-");
 const logger = new Logger("gifMaker");
@@ -457,25 +457,27 @@ function openGifMakerFromItem(item) {
 
     const candidates = collectCandidateUrls(item);
     const adjustedCandidates = new Set<string>();
-    if (directUrl) adjustedCandidates.add(applyTenorMp4Fix(normalizeUrl(directUrl)));
+    if (directUrl) adjustedCandidates.add(normalizeUrl(directUrl));
     for (const candidate of candidates) {
-        adjustedCandidates.add(applyTenorMp4Fix(candidate));
+        adjustedCandidates.add(candidate);
     }
 
-    const preferredUrl = directUrl ? applyTenorMp4Fix(normalizeUrl(directUrl)) : null;
+    const preferredUrl = directUrl ? normalizeUrl(directUrl) : null;
     const orderedUrls = orderCandidateUrls(preferredUrl, adjustedCandidates);
     if (!orderedUrls.length) return;
 
-    const firstUrl = orderedUrls[0];
-    const isVideo = isLikelyVideoUrl(firstUrl);
+    const firstUrl = ensureGifUrl(orderedUrls[0]);
+    const cleanedUrl = stripDiscordFormatParam(firstUrl);
+    const isVideo = isLikelyVideoUrl(cleanedUrl);
 
     openModal(modalProps => (
-        <GifMakerModal url={firstUrl} isVideo={isVideo} {...modalProps} />
+        <GifMakerModal url={cleanedUrl} isVideo={isVideo} {...modalProps} />
     ));
 }
 
+migratePluginSettings("GifMaker", "gifMaker");
 export default definePlugin({
-    name: "gifMaker",
+    name: "GifMaker",
     description: "Create and caption GIFs from any media in chat or the GIF picker.",
     authors: [EquicordDevs.Leon135, EquicordDevs.benjii],
     settings,
