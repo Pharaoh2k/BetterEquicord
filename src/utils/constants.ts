@@ -669,6 +669,14 @@ export const Devs = /* #__PURE__*/ Object.freeze({
     Lunascape: {
         name: "Lunascape",
         id: 383365021415243776n
+    },
+    jax: {
+        name: "jax",
+        id: 1493703027801194598n
+    },
+    yuna0x0: {
+        name: "yuna0x0",
+        id: 213656926414831616n
     }
 } satisfies Record<string, Dev>);
 
@@ -1397,6 +1405,10 @@ export const EquicordDevs = Object.freeze({
     lucabeyer: {
         name: "luca.beyer",
         id: 405090676771127317n
+    },
+    benjas333: {
+        name: "benjas333",
+        id: 456577284464443394n,
     },
 } satisfies Record<string, Dev>);
 
