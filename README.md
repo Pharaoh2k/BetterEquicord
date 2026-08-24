@@ -31,7 +31,7 @@ Linux
 - [AUR](https://aur.archlinux.org/packages?O=0&K=equicord)
 
 ```shell
-bash -c "$(curl -sS https://raw.githubusercontent.com/Equicord/Equicord/refs/heads/main/misc/install.sh)"
+bash -c "$(curl -sS https://raw.githubusercontent.com/Equicord/Equilotl/refs/heads/main/install.sh)"
 ```
 
 ## Installing Equicord Devbuild
