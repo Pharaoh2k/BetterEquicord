@@ -30,10 +30,8 @@ import SettingsPlugin from "@plugins/_core/settings";
 import { classNameFactory } from "@utils/css";
 import { ModalRoot, ModalSize, openModal } from "@utils/modal";
 import { Plugin } from "@utils/types";
-import { findByPropsLazy } from "@webpack";
+import hljs from "highlight.js";
 import { Parser, React, ScrollerThin, TabBar, TextInput, Tooltip, useEffect, useMemo, useReducer, useRef, useState } from "@webpack/common";
-
-const hljs: typeof import("highlight.js").default = findByPropsLazy("highlight", "registerLanguage");
 
 import { PLUGIN_NAME } from "./constants";
 import { getGlobalApi } from "./fakeBdApi";
@@ -349,23 +347,38 @@ function getCollapsedFolderIcon(): string {
 }
 async function reloadPlugin(path: string) {
     const p = pathLib();
-    const parsed = p?.parse?.(path) ?? { dir: "", name: "" };
-    const fullFilename = p?.basename?.(path) ?? "";
-    const plugin = getGlobalApi()
-        .Plugins.getAll()
-        .find((pl: any) => pl.sourcePath === parsed.dir && pl.filename === fullFilename);
-    if (!plugin) return;
-    Vencord.Plugins.stopPlugin(plugin as Plugin);
-    delete (Vencord.Plugins as any).plugins[plugin.name];
-    let code = "";
-    try {
-        code = (await uReadFile(path, "utf8")) as string;
-    } catch (e) {
-        compat_logger.error("Failed to read plugin for reload", e);
+    if (!p) {
+        compat_logger.error("Cannot reload plugin: path module unavailable");
         return;
     }
-    const converted = await convertPlugin(code, parsed.name, true, parsed.dir);
-    await addCustomPlugin(converted);
+
+    const dir = p.dirname(path);
+    const filename = p.basename(path);
+
+    if (!filename.endsWith(".plugin.js")) {
+        compat_logger.warn("Not a BD plugin:", path);
+        return;
+    }
+
+    const plugin = getGlobalApi()
+        .Plugins.getAll()
+        .find(
+            (pl: any) =>
+                pl.sourcePath === dir &&
+                pl.filename === filename
+        );
+
+    if (!plugin) {
+        compat_logger.warn("Plugin not found:", filename);
+        return;
+    }
+
+    try {
+        await getGlobalApi().Plugins.reload(plugin.name);
+        compat_logger.info("Reloaded plugin:", plugin.name);
+    } catch (e) {
+        compat_logger.error("Failed to reload plugin:", plugin.name, e);
+    }
 }
 /** ---------- Component ---------- */
 function FileSystemTab() {
