@@ -18,7 +18,7 @@
         "service_worker": "background.js"
     },
     "permissions": [
-        "declarativeNetRequest"
+        "declarativeNetRequestWithHostAccess"
     ],
     "content_scripts": [
         {
@@ -64,11 +64,9 @@
             }
         ]
     },
-
     "background": {
         "service_worker": "service-worker.js"
     },
-
     "commands": {
         "TOGGLE_MUTE": {
             "description": "Toggle Mute — Toggle your microphone's transmission on and off."
