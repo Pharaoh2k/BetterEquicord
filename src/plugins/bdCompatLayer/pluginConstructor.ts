@@ -494,7 +494,7 @@ function wrapBetterDiscordPluginCode(pluginCode: string, filename: string, plugi
         "const global = window;",
         "const process = window.process;",
         "console.log('Plugin wrapper DiscordNative check:', window.DiscordNative, window.DiscordNative?.nativeModules);",
-        "const DiscordNative=(window.DiscordNative||(window.DiscordNative={}));Object.defineProperty(DiscordNative,'clipboard',{configurable:true,get:()=>window.BdCompatLayer.fakeClipboard});",
+        "const DiscordNative=(window.DiscordNative||(window.DiscordNative={}));if(!Object.prototype.hasOwnProperty.call(DiscordNative,'clipboard'))Object.defineProperty(DiscordNative,'clipboard',{configurable:true,get:()=>window.BdCompatLayer.fakeClipboard});",
     ].join("\n");
     pluginCode = scopeVars + "\n" + pluginCode;
     pluginCode += normalizeExports(pluginName);
