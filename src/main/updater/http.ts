@@ -17,7 +17,6 @@
 */
  
 import { fetchBuffer, fetchJson } from "@main/utils/http";
-import { IpcEvents } from "@shared/IpcEvents";
 import { VENCORD_USER_AGENT } from "@shared/vencordUserAgent";
 import { ipcMain } from "electron";
 // import { writeFileSync as originalWriteFileSync } from "original-fs";
@@ -27,7 +26,8 @@ import { join } from "path";
 import gitHash from "~git-hash";
 import gitRemote from "~git-remote";
 
-import { ASAR_FILE, serializeErrors } from "./common";
+import { Updater } from ".";
+import { ASAR_FILE } from "./common";
 
 const API_BASE = `https://api.github.com/repos/${gitRemote}`;
 let PendingUpdate: string | null = null;
@@ -43,8 +43,8 @@ async function githubGet<T = any>(endpoint: string) {
     });
 }
 
-async function calculateGitChanges() {
-    const isOutdated = await fetchUpdates();
+async function listUpdates() {
+    const isOutdated = await fetchUpdate();
     if (!isOutdated) return [];
 
     const data = await githubGet(`/compare/${gitHash}...HEAD`);
@@ -56,7 +56,7 @@ async function calculateGitChanges() {
     }));
 }
 
-async function fetchUpdates() {
+async function fetchUpdate() {
     const data = await githubGet("/releases/latest");
 
     const hash = data.name.slice(data.name.lastIndexOf(" ") + 1);
@@ -69,7 +69,7 @@ async function fetchUpdates() {
     return true;
 }
 
-async function applyUpdates() {
+async function applyUpdate() {
     if (!PendingUpdate) return true;
 
     const data = await fetchBuffer(PendingUpdate);
@@ -81,7 +81,11 @@ async function applyUpdates() {
     return true;
 }
 
-ipcMain.handle(IpcEvents.GET_REPO, serializeErrors(() => `https://github.com/${gitRemote}`));
-ipcMain.handle(IpcEvents.GET_UPDATES, serializeErrors(calculateGitChanges));
-ipcMain.handle(IpcEvents.UPDATE, serializeErrors(fetchUpdates));
-ipcMain.handle(IpcEvents.BUILD, serializeErrors(applyUpdates));
+const HttpUpdater: Updater = {
+    getRepo: async () => `https://github.com/${gitRemote}`,
+    listUpdates,
+    fetchUpdate,
+    applyUpdate
+};
+
+export default HttpUpdater;
