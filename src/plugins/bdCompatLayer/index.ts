@@ -268,11 +268,12 @@ export default definePlugin({
             });
         }
         else {
-            fetch(
-                proxyUrl +
-                `https://cdn.jsdelivr.net/gh/LosersUnited/ZenFS-builds@${ZENFS_BUILD_HASH}/bin/bundle.js` // TODO: Add option to change this
-            )
-                .then(out => out.text())
+            // jsDelivr sends CORS headers itself, so the proxy is skipped here; a rate-limited proxy left fs unset
+            fetch(`https://cdn.jsdelivr.net/gh/LosersUnited/ZenFS-builds@${ZENFS_BUILD_HASH}/bin/bundle.js`)
+                .then(out => {
+                    if (!out.ok) throw new Error(`ZenFS download failed: HTTP ${out.status}`);
+                    return out.text();
+                })
                 .then(out2 => {
                     out2 = "'use strict';\n" + out2;
                     out2 += "\n//# sourceURL=betterDiscord://internal/BrowserFs.js";
@@ -303,7 +304,7 @@ export default definePlugin({
                             backend: ZenFsDom.WebStorage, storage: Vencord.Util.localStorage,
                         };
                     }
-                    ZenFs.configureSingle(target.browserFSSetting).then(
+                    return ZenFs.configureSingle(target.browserFSSetting).then(
                         async () => {
                             if (target.client && target.client instanceof zen.RealFSClient) await target.client.ready;
                             ReImplementationObject.fs = wrapFsWithRealFsSupport(ZenFs.fs);
@@ -315,7 +316,8 @@ export default definePlugin({
                                 windowBdCompatLayer.fsReadyPromise.resolve();
                         }
                     );
-                });
+                })
+                .catch(err => compat_logger.error("Failed to set up the virtual filesystem; BetterDiscord plugins will not load:", err));
         }
         let _Router = null;
         const windowBdCompatLayer = {
