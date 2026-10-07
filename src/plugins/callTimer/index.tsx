@@ -124,7 +124,7 @@ export default definePlugin({
             predicate: () => settings.store.allCallTimers,
             replacement: [
                 {
-                    match: /user:(\i).*?\.isEmbedded.{0,25};(?=return 0!==(\i)\.length)/,
+                    match: /user:(\i).*?\.isEmbedded.{0,200};(?=return\(\i&&null!=\i&&(\i)\.push\(\i\))/,
                     replace: "$&$2.push($self.renderTimer($1.id));",
                     predicate: () => !settings.store.showWithoutHover,
                 },
