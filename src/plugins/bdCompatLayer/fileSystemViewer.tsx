@@ -28,12 +28,19 @@ import { SettingsTab } from "@components/settings/tabs";
 import { Span } from "@components/Span";
 import SettingsPlugin from "@plugins/_core/settings";
 import { classNameFactory } from "@utils/css";
-import { ModalRoot, ModalSize, openModal } from "@utils/modal";
+import { ModalRoot as LegacyModalRoot, ModalSize, openModal } from "@utils/modal";
 import { Plugin } from "@utils/types";
+import type { RenderModalProps } from "@vencord/discord-types";
 import { findByPropsLazy } from "@webpack";
 import { Parser, React, ScrollerThin, TabBar, TextInput, Tooltip, useEffect, useMemo, useReducer, useRef, useState } from "@webpack/common";
+import type { ComponentType, PropsWithChildren } from "react";
 
-const hljs: typeof import("highlight.js").default = findByPropsLazy("highlight", "registerLanguage");
+const ModalRoot: ComponentType<PropsWithChildren<RenderModalProps & { size: ModalSize; }>> = LegacyModalRoot;
+const hljs: {
+    getLanguage(name: string): unknown;
+    highlight(code: string, options: { language: string; }): { value: string; };
+    highlightAuto(code: string): { value: string; };
+} = findByPropsLazy("highlight", "registerLanguage");
 
 import { PLUGIN_NAME } from "./constants";
 import { getGlobalApi } from "./fakeBdApi";
@@ -1366,24 +1373,16 @@ function InlineMonacoViewer({
         (async () => {
             const monaco = await ensureMonaco();
             if (!monaco || !hostRef.current || disposed) return;
-            await ensureMonacoWorkers(monaco);
-            await ensureMonacoStyles(monaco.version);
-            const monacoLang = language || "plaintext";
-            await ensureMonacoLanguage(monaco, monacoLang);
+            const known = monaco.languages.getLanguages().some((l: { id: string; }) => l.id === language);
+            const monacoLang = known ? language : "plaintext";
             const dark = document.documentElement.classList.contains("theme-dark")
                 || document.body.classList.contains("theme-dark");
             monaco.editor.setTheme(dark ? "vs-dark" : "vs");
             modelRef.current = monaco.editor.createModel(value, monacoLang);
             editorRef.current = monaco.editor.create(hostRef.current, {
+                ...MONACO_EDITOR_OPTIONS,
                 model: modelRef.current,
-                automaticLayout: true,
-                minimap: { enabled: true },
-                wordWrap: "on",
-                scrollBeyondLastLine: false,
                 readOnly,
-                tabSize: 2,
-                fontSize: 13,
-                lineNumbers: "on",
                 glyphMargin: false,
                 lineDecorationsWidth: 0
             });
@@ -1806,24 +1805,15 @@ function DetachedMonacoEditor({
                 openAlertModal("Monaco not available", "Could not load the Monaco editor.");
                 return;
             }
-            await ensureMonacoWorkers(monaco);
-            await ensureMonacoStyles(monaco.version);
-            const monacoLang = inferLanguageFromName(name) || language || "plaintext";
-            await ensureMonacoLanguage(monaco, monacoLang);
+            const monacoLang = resolveMonacoLanguage(monaco, name, language);
             if (!hostRef.current || disposed) return;
             const dark = document.documentElement.classList.contains("theme-dark")
                 || document.body.classList.contains("theme-dark");
             monaco.editor.setTheme(dark ? "vs-dark" : "vs");
             modelRef.current = monaco.editor.createModel(value, monacoLang);
             editorRef.current = monaco.editor.create(hostRef.current, {
+                ...MONACO_EDITOR_OPTIONS,
                 model: modelRef.current,
-                automaticLayout: true,
-                minimap: { enabled: true },
-                wordWrap: "on",
-                scrollBeyondLastLine: false,
-                tabSize: 2,
-                insertSpaces: true,
-                fontSize: 13,
                 glyphMargin: false,
                 lineDecorationsWidth: 0
             });
@@ -2056,7 +2046,7 @@ function openImageModal(url: string, name: string) {
                         cursor: "inherit"
                     }}
                 />
-                {/* Image itself – no event handlers */}
+                {/* Image itself - no event handlers */}
                 <img
                     src={url}
                     alt={name}
@@ -2122,56 +2112,137 @@ function openAlertModal(title: string, body: string) {
     ));
 }
 /** ---------- Monaco / Highlight helpers ---------- */
-let __monacoCache: any = null;
-async function ensureMonaco(): Promise<any> {
-    if (__monacoCache) return __monacoCache;
-    try {
-        // @ts-ignore
-        let mod = await import("monaco-editor/esm/vs/editor/editor.api");
-        // @ts-ignore
-        await import("monaco-editor/esm/vs/editor/contrib/find/browser/findController");
-        // @ts-ignore
-        if (mod?.editor == null && mod?.default) mod = mod.default;
-        __monacoCache = mod;
-    } catch {
-        // @ts-ignore
-        __monacoCache = (globalThis as any).monaco ?? null;
-    }
-    return __monacoCache;
+// Same approach as BetterDiscord's editor: Monaco's AMD build from a CDN, so every language and worker shares one module graph
+const MONACO_BASE = "https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min";
+let monacoPromise: Promise<any> | undefined;
+function ensureMonaco(): Promise<any> {
+    return monacoPromise ??= loadMonaco().catch(err => {
+        compat_logger.error("Failed to load the Monaco editor", err);
+        monacoPromise = undefined;
+        return (globalThis as any).monaco ?? null;
+    });
 }
-// --- Configure Monaco to use module workers (no AMD, no toUrl) ---
-let __monacoWorkersConfigured = false;
-function makeMonacoWorker(pathFromPkgRoot: string, version?: string) {
-    try {
-        // @ts-ignore
-        return new Worker(new URL(`monaco-editor/esm/${pathFromPkgRoot}`, import.meta.url), { type: "module" });
-    } catch {
-        const v = (version && String(version).trim()) || "latest";
-        const url = `https://cdn.jsdelivr.net/npm/monaco-editor@${v}/esm/${pathFromPkgRoot}`;
-        return new Worker(url, { type: "module" });
-    }
-}
-async function ensureMonacoWorkers(monaco: any) {
-    if (__monacoWorkersConfigured) return;
-    __monacoWorkersConfigured = true;
-    (globalThis as any).MonacoEnvironment = {
-        getWorker(_: unknown, label: string) {
-            const v = monaco?.version;
-            if (label === "json") {
-                return makeMonacoWorker("vs/language/json/json.worker.js", v);
-            }
-            if (label === "css" || label === "scss" || label === "less") {
-                return makeMonacoWorker("vs/language/css/css.worker.js", v);
-            }
-            if (label === "html" || label === "handlebars" || label === "razor") {
-                return makeMonacoWorker("vs/language/html/html.worker.js", v);
-            }
-            if (label === "typescript" || label === "javascript") {
-                return makeMonacoWorker("vs/language/typescript/ts.worker.js", v);
-            }
-            return makeMonacoWorker("vs/editor/editor.worker.js", v);
-        }
+async function loadMonaco() {
+    (globalThis as any).MonacoEnvironment ??= {
+        getWorker: (_: string, label: string) => new Worker(URL.createObjectURL(new Blob([
+            `self.MonacoEnvironment={baseUrl:"${MONACO_BASE}/"};importScripts("${MONACO_BASE}/vs/base/worker/workerMain.js");`
+        ], { type: "text/javascript" })), { name: label })
     };
+    injectCssOnce("monaco-editor-css", `${MONACO_BASE}/vs/editor/editor.main.css`);
+
+    const win = window as any;
+    const commonjsRequire = win.require;
+    const hadModule = "module" in win;
+    const commonjsModule = win.module;
+    delete win.module;
+    try {
+        await new Promise<void>((resolve, reject) => {
+            const script = document.createElement("script");
+            script.src = `${MONACO_BASE}/vs/loader.js`;
+            script.onload = () => resolve();
+            script.onerror = () => reject(new Error("Failed to load Monaco's AMD loader"));
+            document.head.append(script);
+        });
+        const amdRequire = win.require;
+        win.require = commonjsRequire;
+        amdRequire.config({ paths: { vs: `${MONACO_BASE}/vs` } });
+        const monaco = await new Promise<any>((resolve, reject) => amdRequire(["vs/editor/editor.main"], resolve, reject));
+        // Monaco's lazy chunks call define() directly; hiding the AMD marker keeps UMD scripts loaded later on their global path
+        delete win.define.amd;
+        configureMonacoLanguages(monaco);
+        return monaco;
+    } finally {
+        win.require = commonjsRequire;
+        if (hadModule) win.module = commonjsModule;
+    }
+}
+function configureMonacoLanguages(monaco: any) {
+    const { json, typescript } = monaco.languages;
+    json.jsonDefaults.setDiagnosticsOptions({ validate: true, allowComments: false, trailingCommas: "error", enableSchemaRequest: true, schemas: [] });
+    const compilerOptions = {
+        target: typescript.ScriptTarget.ESNext,
+        module: typescript.ModuleKind.ESNext,
+        moduleResolution: typescript.ModuleResolutionKind.NodeJs,
+        jsx: typescript.JsxEmit.React,
+        allowJs: true,
+        allowNonTsExtensions: true,
+        esModuleInterop: true,
+        lib: ["esnext", "dom", "dom.iterable"]
+    };
+    const inlayHints = {
+        includeInlayParameterNameHints: "all",
+        includeInlayParameterNameHintsWhenArgumentMatchesName: false,
+        includeInlayFunctionParameterTypeHints: true,
+        includeInlayVariableTypeHints: true,
+        includeInlayPropertyDeclarationTypeHints: true,
+        includeInlayFunctionLikeReturnTypeHints: true,
+        includeInlayEnumMemberValueHints: true
+    };
+    for (const defaults of [typescript.typescriptDefaults, typescript.javascriptDefaults]) {
+        defaults.setCompilerOptions(compilerOptions);
+        defaults.setDiagnosticsOptions({ noSemanticValidation: false, noSyntaxValidation: false });
+        defaults.setInlayHintsOptions(inlayHints);
+        defaults.setEagerModelSync(true);
+    }
+}
+const MONACO_EDITOR_OPTIONS = {
+    automaticLayout: true,
+    fixedOverflowWidgets: true,
+    minimap: { enabled: true, renderCharacters: true },
+    wordWrap: "on",
+    scrollBeyondLastLine: false,
+    tabSize: 2,
+    insertSpaces: true,
+    detectIndentation: true,
+    fontSize: 13,
+    fontLigatures: true,
+    lineNumbers: "on",
+    bracketPairColorization: { enabled: true, independentColorPoolPerBracketType: true },
+    guides: { bracketPairs: true, bracketPairsHorizontal: true, highlightActiveBracketPair: true, indentation: true, highlightActiveIndentation: true },
+    stickyScroll: { enabled: true },
+    smoothScrolling: true,
+    cursorBlinking: "smooth",
+    cursorSmoothCaretAnimation: "on",
+    mouseWheelZoom: true,
+    folding: true,
+    foldingHighlight: true,
+    showFoldingControls: "mouseover",
+    renderWhitespace: "selection",
+    renderLineHighlight: "all",
+    matchBrackets: "always",
+    occurrencesHighlight: "singleFile",
+    selectionHighlight: true,
+    colorDecorators: true,
+    links: true,
+    hover: { enabled: true },
+    quickSuggestions: { other: true, comments: false, strings: true },
+    suggestOnTriggerCharacters: true,
+    parameterHints: { enabled: true },
+    formatOnPaste: true,
+    formatOnType: true,
+    autoClosingBrackets: "languageDefined",
+    autoClosingQuotes: "languageDefined",
+    autoSurround: "languageDefined",
+    lightbulb: { enabled: "on" },
+    inlayHints: { enabled: "on" },
+    codeLens: true,
+    dragAndDrop: true,
+    contextmenu: true,
+    unicodeHighlight: { ambiguousCharacters: true, invisibleCharacters: true },
+    "semanticHighlighting.enabled": true
+};
+function resolveMonacoLanguage(monaco: any, name: string, fallback?: string) {
+    const lower = name.toLowerCase();
+    const languages: { id: string; extensions?: string[]; filenames?: string[]; }[] = monaco.languages.getLanguages();
+    const byFilename = languages.find(l => l.filenames?.some(f => f.toLowerCase() === lower));
+    if (byFilename) return byFilename.id;
+    let best: { id: string; length: number; } | undefined;
+    for (const { id, extensions } of languages) {
+        for (const ext of extensions ?? []) {
+            if (lower.endsWith(ext.toLowerCase()) && ext.length > (best?.length ?? 0)) best = { id, length: ext.length };
+        }
+    }
+    return best?.id ?? inferLanguageFromName(name) ?? fallback ?? "plaintext";
 }
 // --- Monaco language helpers ---
 function inferLanguageFromName(name: string): string | undefined {
@@ -2221,42 +2292,6 @@ function inferLanguageFromName(name: string): string | undefined {
     };
     return map[ext];
 }
-const LanguageLoaders: Record<string, () => Promise<unknown>> = {
-    javascript: () => import("monaco-editor/esm/vs/basic-languages/javascript/javascript.contribution.js"),
-    typescript: () => import("monaco-editor/esm/vs/basic-languages/typescript/typescript.contribution.js"),
-    json: () => import("monaco-editor/esm/vs/language/json/monaco.contribution.js"),
-    css: () => import("monaco-editor/esm/vs/basic-languages/css/css.contribution.js"),
-    scss: () => import("monaco-editor/esm/vs/basic-languages/scss/scss.contribution.js"),
-    less: () => import("monaco-editor/esm/vs/basic-languages/less/less.contribution.js"),
-    html: () => import("monaco-editor/esm/vs/basic-languages/html/html.contribution.js"),
-    markdown: () => import("monaco-editor/esm/vs/basic-languages/markdown/markdown.contribution.js"),
-    yaml: () => import("monaco-editor/esm/vs/basic-languages/yaml/yaml.contribution.js"),
-    xml: () => import("monaco-editor/esm/vs/basic-languages/xml/xml.contribution.js"),
-    ini: () => import("monaco-editor/esm/vs/basic-languages/ini/ini.contribution.js"),
-    shell: () => import("monaco-editor/esm/vs/basic-languages/shell/shell.contribution.js"),
-    python: () => import("monaco-editor/esm/vs/basic-languages/python/python.contribution.js"),
-    php: () => import("monaco-editor/esm/vs/basic-languages/php/php.contribution.js"),
-    ruby: () => import("monaco-editor/esm/vs/basic-languages/ruby/ruby.contribution.js"),
-    go: () => import("monaco-editor/esm/vs/basic-languages/go/go.contribution.js"),
-    rust: () => import("monaco-editor/esm/vs/basic-languages/rust/rust.contribution.js"),
-    sql: () => import("monaco-editor/esm/vs/basic-languages/sql/sql.contribution.js"),
-    c: () => import("monaco-editor/esm/vs/basic-languages/cpp/cpp.contribution.js"),
-    cpp: () => import("monaco-editor/esm/vs/basic-languages/cpp/cpp.contribution.js"),
-    java: () => import("monaco-editor/esm/vs/basic-languages/java/java.contribution.js"),
-    csharp: () => import("monaco-editor/esm/vs/basic-languages/csharp/csharp.contribution.js"),
-    dockerfile: () => import("monaco-editor/esm/vs/basic-languages/dockerfile/dockerfile.contribution.js"),
-    lua: () => import("monaco-editor/esm/vs/basic-languages/lua/lua.contribution.js"),
-    swift: () => import("monaco-editor/esm/vs/basic-languages/swift/swift.contribution.js"),
-};
-async function ensureMonacoLanguage(monaco: any, langId: string | undefined) {
-    if (!langId) return;
-    if (monaco.languages.getLanguages().some((l: any) => l.id === langId)) return;
-    const loader = LanguageLoaders[langId];
-    if (loader) {
-        try { await loader(); }
-        catch { /* fallback to plaintext if a language isn’t present */ }
-    }
-}
 function injectCssOnce(id: string, href: string) {
     if (document.getElementById(id)) return;
     const link = document.createElement("link");
@@ -2264,13 +2299,6 @@ function injectCssOnce(id: string, href: string) {
     link.rel = "stylesheet";
     link.href = href;
     document.head.appendChild(link);
-}
-async function ensureMonacoStyles(monacoVersion?: string) {
-    const v = monacoVersion && String(monacoVersion).trim() ? monacoVersion : "latest";
-    injectCssOnce(
-        "monaco-editor-css",
-        `https://cdn.jsdelivr.net/npm/monaco-editor@${v}/min/vs/editor/editor.main.css`
-    );
 }
 function getFileIcon(filename: string): string {
     const e = getExt(filename);

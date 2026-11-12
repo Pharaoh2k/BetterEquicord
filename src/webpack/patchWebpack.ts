@@ -55,18 +55,8 @@ function getExportOverride(exportsObj: object, key: PropertyKey): unknown | unde
     return map?.get(key);
 }
 
-function clearExportOverride(exportsObj: object, key?: PropertyKey) {
-    const map = exportOverrides.get(exportsObj);
-    if (!map) return;
-    if (typeof key === "undefined") {
-        exportOverrides.delete(exportsObj);
-    } else {
-        map.delete(key);
-        if (map.size === 0) exportOverrides.delete(exportsObj);
-    }
-}
+export const factoryTransformers = new Set<(factory: AnyModuleFactory, moduleId: PropertyKey) => AnyModuleFactory | undefined>();
 // --- /BD Compat ---
-
 
 /** Whether we tried to fallback to the WebpackRequire of the factory, or disabled patches */
 let wreqFallbackApplied = false;
@@ -207,28 +197,29 @@ define(Function.prototype, "m", {
 
             // Overwrite Webpack's defineExports to keep live bindings by default,
             // while allowing BD-style overrides via a setter stored out-of-line.
-            this.d = function (exports: any, definition: Record<string, () => any>) {
-                for (const key in definition) {
-                    if (Object.hasOwn(definition, key) && !Object.hasOwn(exports, key)) {
-                        Object.defineProperty(exports, key, {
-                            enumerable: true,
-                            configurable: true,
-                            get() {
-                                const ov = getExportOverride(exports, key);
-                                return ov !== undefined ? ov : definition[key]();
-                            },
-                            set(v: unknown) {
-                                // Allow any value (most BD patches set functions)
-                                setExportOverride(exports, key, v);
-                            }
-                        });
+            this.d = function (exports, getters, values) {
+                const defineProps = (definitions: Record<PropertyKey, any> | undefined, kind: "get" | "value") => {
+                    for (const key in definitions) {
+                        if (Object.hasOwn(definitions, key) && !Object.hasOwn(exports, key)) {
+                            Object.defineProperty(exports, key, {
+                                enumerable: true,
+                                configurable: true,
+                                get() {
+                                    const ov = getExportOverride(exports, key);
+                                    return ov !== undefined ? ov : kind === "get" ? definitions[key]() : definitions[key];
+                                },
+                                set(v: unknown) {
+                                    // Allow any value (most BD patches set functions)
+                                    setExportOverride(exports, key, v);
+                                }
+                            });
+                        }
                     }
                 };
 
                 defineProps(getters, "get");
                 defineProps(values, "value");
             };
-
         };
     }
 });
@@ -428,9 +419,12 @@ function runFactoryWithWrap(patchedFactory: PatchedModuleFactory, moduleId: Prop
         }
     }
 
+    let factoryToRun: AnyModuleFactory = patchedFactory;
+    for (const transform of factoryTransformers) factoryToRun = transform(factoryToRun, moduleId) ?? factoryToRun;
+
     let factoryReturn: unknown;
     try {
-        factoryReturn = patchedFactory.apply(thisArg, argArray);
+        factoryReturn = factoryToRun.apply(thisArg, argArray);
     } catch (err) {
         // Just re-throw Discord errors
         if (patchedFactory === originalFactory) {

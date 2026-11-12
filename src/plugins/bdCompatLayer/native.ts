@@ -20,8 +20,110 @@ import {
     writeFileSync,
     type WriteStream
 } from "fs";
+import { request as httpRequest } from "http";
+import { request as httpsRequest, type RequestOptions } from "https";
 import { homedir } from "os";
 import { dirname } from "path";
+const NET_METHODS = new Set(["GET", "PUT", "POST", "DELETE", "PATCH", "OPTIONS", "HEAD", "CONNECT", "TRACE"]);
+const NET_REDIRECT_CODES = new Set([301, 302, 307, 308]);
+const NET_BODYLESS_CODES = new Set([101, 204, 205, 304]);
+const NET_MAX_RESPONSE_SIZE = 100 * 1024 * 1024;
+const netFetchControllers = new Map<string, AbortController>();
+export interface NetFetchInit {
+    method?: string;
+    headers?: Record<string, string>;
+    body?: Uint8Array | null;
+    redirect?: RequestRedirect;
+    timeout?: number | null;
+    maxRedirects?: number;
+    rejectUnauthorized?: boolean;
+}
+export interface NetFetchResponse {
+    status: number;
+    statusText: string;
+    headers: Record<string, string>;
+    url: string;
+    redirected: boolean;
+    body: Uint8Array<ArrayBuffer> | null;
+}
+function decodePath(path: string) {
+    try {
+        return decodeURIComponent(path);
+    } catch {
+        return path;
+    }
+}
+const isWebhookUrl = (uri: string) => /(^|\/)api\/(?:v\d+\/)?webhooks(\/|$)/.test(decodePath(new URL(uri).pathname).toLowerCase());
+export function netFetch(_event: unknown, id: string, url: string, init: NetFetchInit) {
+    return new Promise<NetFetchResponse | { error: string; }>(resolve => {
+        if (typeof id !== "string" || typeof url !== "string" || !URL.canParse(url) || typeof init !== "object" || init === null) return resolve({ error: "Invalid request" });
+        const controller = new AbortController();
+        netFetchControllers.set(id, controller);
+        const done = (result: NetFetchResponse | { error: string; }) => {
+            netFetchControllers.delete(id);
+            resolve(result);
+        };
+        const maxRedirects = typeof init.maxRedirects === "number" ? init.maxRedirects : 20;
+        const timeout = init.timeout === undefined ? 8000 : init.timeout;
+        const options: RequestOptions = {
+            method: NET_METHODS.has(init.method ?? "") ? init.method : "GET",
+            headers: Object.fromEntries(Object.entries(init.headers ?? {}).filter(([, value]) => typeof value === "string")),
+            timeout: typeof timeout === "number" && Number.isFinite(timeout) ? timeout : undefined,
+            rejectUnauthorized: init.rejectUnauthorized !== false,
+            signal: controller.signal
+        };
+        let redirects = 0;
+        const execute = (uri: string) => {
+            if (isWebhookUrl(uri)) return done({ error: "Failed to fetch" });
+            if (!uri.startsWith("http:") && !uri.startsWith("https:")) return done({ error: `Unsupported protocol: ${uri.slice(0, uri.indexOf(":"))}:` });
+            const request = (uri.startsWith("https:") ? httpsRequest : httpRequest)(uri, options, res => {
+                const status = res.statusCode ?? 0;
+                if (NET_REDIRECT_CODES.has(status) && init.redirect !== "manual") {
+                    res.resume();
+                    if (init.redirect === "error") return done({ error: "Failed to fetch" });
+                    if (redirects >= maxRedirects) return done({ error: `Maximum amount of redirects reached (${maxRedirects})` });
+                    if (res.headers.location) {
+                        let next: URL;
+                        try {
+                            next = new URL(res.headers.location);
+                        } catch {
+                            return done({ error: "Invalid redirect location" });
+                        }
+                        for (const [key, value] of new URL(uri).searchParams) next.searchParams.set(key, value);
+                        redirects++;
+                        return execute(next.href);
+                    }
+                }
+                const chunks: Buffer[] = [];
+                let size = 0;
+                res.on("data", (chunk: Buffer) => {
+                    size += chunk.length;
+                    if (size > NET_MAX_RESPONSE_SIZE) {
+                        request.destroy();
+                        return done({ error: "Response too large" });
+                    }
+                    chunks.push(chunk);
+                });
+                res.once("error", err => done({ error: err.message }));
+                res.once("end", () => done({
+                    status,
+                    statusText: res.statusMessage ?? "",
+                    headers: Object.fromEntries(Object.entries(res.headers).map(([key, value]) => [key, Array.isArray(value) ? value.join(", ") : value ?? ""])),
+                    url: uri,
+                    redirected: redirects > 0,
+                    body: NET_BODYLESS_CODES.has(status) ? null : new Uint8Array(Buffer.concat(chunks))
+                }));
+            });
+            request.once("timeout", () => request.destroy(new Error("Request timed out")));
+            request.once("error", err => done({ error: err.message }));
+            request.end(init.body instanceof Uint8Array ? init.body : undefined);
+        };
+        execute(url);
+    });
+}
+export function abortNetFetch(_event: unknown, id: string) {
+    netFetchControllers.get(id)?.abort();
+}
 const ALLOWED_FETCH_DOMAINS = [
     "cdn.discordapp.com",
     "media.discordapp.net",

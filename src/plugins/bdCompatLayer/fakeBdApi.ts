@@ -29,33 +29,29 @@
  * SPDX-License-Identifier: GPL-3.0-only
  */
 
-import { showNotification as VencordShowNotification } from "@api/Notifications";
-import { Settings } from "@api/Settings";
-const VenComponents = OptionComponentMap;
-// type-only import to pull in the augmentation (erased at runtime)
-import "./types/bdapi-ui-augment";
-
 import * as VencordCommands from "@api/Commands";
-import { Button as VencordButton } from "@components/Button";
-import { Divider } from "@components/Divider";
+import { Settings } from "@api/Settings";
+import { InfoIcon, WarningIcon } from "@components/Icons";
 import { Paragraph as VencordParagraph } from "@components/Paragraph";
-import { OptionComponentMap } from "@components/settings/tabs/plugins/components";
-import { openInviteModal as VencordOpenInviteModal } from "@utils/discord";
 import { canonicalizeMatch } from "@utils/patches";
-import { OptionType } from "@utils/types";
-import { ChunkIdsRegex, DefaultExtractAndLoadChunksRegex, wreq } from "@webpack";
-import { lodash } from "@webpack/common";
+import { DefaultExtractAndLoadChunksRegex, findByPropsLazy, parseChunkIds, wreq } from "@webpack";
+import { FluxDispatcher, InviteActions, lodash, showToast, Tooltip } from "@webpack/common";
 
-import { ColorPickerSettingComponent } from "./components/ColorPickerSetting";
-import { KeybindSettingComponent } from "./components/KeybindSetting";
-import { RadioSettingComponent } from "./components/RadioSetting";
-import { SliderSettingComponent } from "./components/SliderSetting";
+import * as BdWebpack from "./bdModules/webpack";
 import { PLUGIN_NAME } from "./constants";
-import { fetchWithCorsProxyFallback } from "./fakeStuff";
-import { addCustomPlugin, AssembledBetterDiscordPlugin, convertPlugin } from "./pluginConstructor";
-import { getModule as BdApi_getModule, monkeyPatch as BdApi_monkeyPatch, Patcher, ReactUtils_filler } from "./stuffFromBD";
+import { BdNet } from "./fakeStuff";
+import { addCustomPlugin, AssembledBetterDiscordPlugin, convertPlugin, parseJsDoc } from "./pluginConstructor";
+import { monkeyPatch as BdApi_monkeyPatch, Patcher, ReactUtils_filler } from "./stuffFromBD";
+// type-only import to pull in the augmentation (erased at runtime)
+import type { BdToastOptions, BdToastType } from "./types/bdapi-ui-augment";
 import { showChangelogModal as _showChangelogModal } from "./ui/changelog";
-import { addLogger, compat_logger, createTextForm, docCreateElement, ObjectMerger, openFileSelect } from "./utils";
+import { Button as BdButton, ErrorBoundary as BdErrorBoundary, Flex as BdFlex, injectStyle, onCleanup, parseMarkdown, Text as BdText, useStateFromStores as bdUseStateFromStores } from "./ui/common";
+import { openFloatingWindow } from "./ui/floatingWindows";
+import { Checkbox as BdCheckbox, ColorInput, DropdownInput, KeybindInput, NumberInput, RadioInput, SearchInput, SliderInput, SwitchInput, TextInput as BdTextInput } from "./ui/inputs";
+import { BdModal, closeAllConfirmationModals, closeConfirmationModal, type ConfirmationModalOptions, showConfirmationModal } from "./ui/modals";
+import { type NoticeOptions, showNotice } from "./ui/notices";
+import { buildSettingItem, buildSettingsPanel, SettingGroup, SettingItem } from "./ui/settingsPanel";
+import { addLogger, compat_logger, extend, openFileSelect, semverCompare } from "./utils";
 interface BdDialogOptions {
     mode?: "open" | "save";
     defaultPath?: string;
@@ -119,6 +115,13 @@ class PatcherWrapper {
         };
     }
 }
+const PatcherAPI = {
+    before: (caller: string, ...args) => Patcher.before(caller, ...args),
+    instead: (caller: string, ...args) => Patcher.instead(caller, ...args),
+    after: (caller: string, ...args) => Patcher.after(caller, ...args),
+    getPatchesByCaller: (caller: string) => Patcher.getPatchesByCaller(caller),
+    unpatchAll: (caller: string) => Patcher.unpatchAll(caller)
+};
 
 /**
  * A minimal Flux-compatible store for use with Hooks.useStateFromStores.
@@ -344,7 +347,8 @@ function nodePatcherHandleAsync(
  * Used by wrapInHooks to detect and suppress this specific error.
  */
 const HOOKS_ERR_MSG = "Cannot read properties of null (reading 'useState')";
-const USE_ERR_MSG = "Cannot read properties of null (reading 'use')";
+const USE_ERR_MSG = "Minified React error #460; visit https://react.dev/errors/460 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.";
+const NO_RESOLVE = Symbol("no-resolve");
 
 /**
  * Patched React hooks for use with wrapInHooks.
@@ -354,6 +358,25 @@ const USE_ERR_MSG = "Cannot read properties of null (reading 'use')";
  * Matches BetterDiscord's patchedReactHooks implementation.
  */
 const patchedReactHooks: Record<string, (...args: any[]) => any> = {
+    use(usable: any) {
+        if (typeof usable?.then !== "function") return usable._currentValue;
+        let value: any = NO_RESOLVE;
+        usable.then((ret: any) => { value = ret; });
+        if (value === NO_RESOLVE) throw new Error(USE_ERR_MSG);
+        return value;
+    },
+    readContext(context: any) {
+        return context._currentValue;
+    },
+    useFormState(_action: any, initialState: any) {
+        return [initialState, () => { }, false];
+    },
+    useActionState(_action: any, initialState: any) {
+        return [initialState, () => { }, false];
+    },
+    useOptimistic(passthrough: any) {
+        return [passthrough, () => { }];
+    },
     useMemo(factory: () => any) {
         return factory();
     },
@@ -369,7 +392,7 @@ const patchedReactHooks: Record<string, (...args: any[]) => any> = {
     },
     useEffect() { },
     useLayoutEffect() { },
-    useRef(initialValue: any) {
+    useRef(initialValue: any = null) {
         return { current: initialValue };
     },
     useCallback(callback: any) {
@@ -387,7 +410,7 @@ const patchedReactHooks: Record<string, (...args: any[]) => any> = {
         return [false, (callback: () => void) => callback()];
     },
     useId() {
-        return "";
+        return Math.random().toString(36).slice(2, 11);
     },
     useSyncExternalStore(_subscribe: any, getSnapshot: () => any) {
         return getSnapshot();
@@ -396,15 +419,11 @@ const patchedReactHooks: Record<string, (...args: any[]) => any> = {
 };
 
 function resolvePluginByAny(idOrFile: string): AssembledBetterDiscordPlugin | undefined {
-    const all = [
-        ...(window as any).GeneratedPlugins ?? [],
-        ...((window as any).BdCompatLayer?.queuedPlugins ?? [])
-    ] as AssembledBetterDiscordPlugin[];
-    return all.find(p =>
-        p?.name === idOrFile ||
-        (p as any)?.originalName === idOrFile ||
-        (p as any)?.id === idOrFile ||
-        (p as any)?.filename === idOrFile
+    return (window.GeneratedPlugins as AssembledBetterDiscordPlugin[]).find(p =>
+        p.name === idOrFile ||
+        p.originalName === idOrFile ||
+        p.id === idOrFile ||
+        p.filename === idOrFile
     );
 }
 function safeStopPlugin(name: string) {
@@ -515,8 +534,8 @@ async function softReloadBDPlugin(p: AssembledBetterDiscordPlugin) {
     const { folder } = getGlobalApi().Plugins;
     const fullPath = `${folder}/${(p as any).filename}`;
     const wasEnabled = Vencord.Plugins.isPluginEnabled(p.name);
-    Vencord.Settings.plugins["BD Compatibility Layer"].pluginsStatus[p.name] = wasEnabled;
     safeStopPlugin(p.name);
+    Vencord.Settings.plugins["BD Compatibility Layer"].pluginsStatus[p.name] = wasEnabled;
     const inst = Vencord.Plugins.plugins[p.name];
     const idx = (globalThis as any).GeneratedPlugins?.indexOf?.(inst);
     if (typeof idx === "number" && idx > -1) (globalThis as any).GeneratedPlugins.splice(idx, 1);
@@ -551,41 +570,35 @@ function stampFileSigOnCurrent(name: string) {
     } catch { }
 }
 export const PluginsHolder = {
-    getAll: () => {
-        const queuedPlugins = (window as any).BdCompatLayer?.queuedPlugins as unknown[] ?? [];
-        return [...(window as any).GeneratedPlugins ?? [], ...queuedPlugins] as AssembledBetterDiscordPlugin[];
-    },
-    isEnabled: (name: string) => Vencord.Plugins.isPluginEnabled(name),
-    get: function (name: string) {
-        return this.getAll().find(x => (x as any).name === name)
-            ?? this.getAll().find(x => (x as any).originalName === name);
-    },
-    /** Enable the plugin (BD parity) with auto hot-swap-if-updated. */
-    enable: async function (idOrFile: string) {
+    getAll: () => [...window.GeneratedPlugins] as AssembledBetterDiscordPlugin[],
+    isEnabled: (idOrFile: string) => {
         const p = resolvePluginByAny(idOrFile);
-        if (!p) return;
+        return !!p && Vencord.Plugins.isPluginEnabled(p.name);
+    },
+    get: (idOrFile: string) => resolvePluginByAny(idOrFile),
+    /** Enable the plugin (BD parity) with auto hot-swap-if-updated. */
+    enable: function (idOrFile: string) {
+        const p = resolvePluginByAny(idOrFile);
+        if (!p || p.partial || p.started) return;
         Vencord.Settings.plugins[p.name].enabled = true;
         Vencord.Settings.plugins["BD Compatibility Layer"].pluginsStatus[p.name] = true;
         const current = Vencord.Plugins.plugins[p.name] as any;
         const hadSig = current?.__bdFileSig;
         const nowSig = getFileSig(current ?? p as any);
         if ((current?.filename && nowSig !== undefined && hadSig !== nowSig) || (!hadSig && nowSig !== undefined)) {
-            try {
-                await softReloadBDPlugin(p);
-                return;
-            } catch (e) {
-                console.warn("[BdCompat] enable(): soft reload failed, starting old instance", e);
-            }
+            return softReloadBDPlugin(p).then(() => true, e => {
+                compat_logger.error(`Failed to reload ${p.name} while enabling it`, e);
+                return false;
+            });
         }
-        try {
-            Vencord.Plugins.startPlugin(Vencord.Plugins.plugins[p.name]);
-            stampFileSigOnCurrent(p.name);
-        } catch { }
+        const started = Vencord.Plugins.startPlugin(Vencord.Plugins.plugins[p.name]);
+        stampFileSigOnCurrent(p.name);
+        return started;
     },
     /** Disable the plugin (BD parity). */
     disable: function (idOrFile: string) {
         const p = resolvePluginByAny(idOrFile);
-        if (!p) return;
+        if (!p || !Vencord.Plugins.isPluginEnabled(p.name)) return;
         Vencord.Settings.plugins[p.name].enabled = false;
         Vencord.Settings.plugins["BD Compatibility Layer"].pluginsStatus[p.name] = false;
         safeStopPlugin(p.name);
@@ -596,23 +609,11 @@ export const PluginsHolder = {
         if (!p) return;
         return this.isEnabled(p.name) ? this.disable(p.name) : this.enable(p.name);
     },
-    reload: async function (idOrFile: string) {
+    reload: function (idOrFile: string) {
         const p = resolvePluginByAny(idOrFile);
-        if (p && (p as any).filename) {
-            try {
-                await softReloadBDPlugin(p);
-                return;
-            } catch (e) {
-                console.warn("[BdCompat] Soft reload failed for", p?.name, e);
-            }
-        }
-        try {
-            await (window as any).BdCompatLayer?.reloadCompatLayer?.();
-            return;
-        } catch (e) {
-            console.warn("[BdCompat] reloadCompatLayer failed", e);
-        }
-        try { location.reload(); } catch { }
+        if (!p) return false;
+        softReloadBDPlugin(p).catch(e => compat_logger.error(`Failed to reload ${p.name}`, e));
+        return true;
     },
     /** BD's API exposes the addon folder path; keep existing behavior. */
     rootFolder: "/BD",
@@ -630,32 +631,31 @@ export const PluginsHolder = {
     },
 };
 type AssembledTheme = {
+    [key: string]: unknown;
     id: string;
     name: string;
     author: string;
     description: string;
     version: string;
+    slug: string;
     filename: string;
     css: string;
     enabled: boolean;
     properties?: Record<string, Record<string, string | boolean>>;
 };
 function parseThemeMetadata(css: string, filename: string) {
-    const meta = { name: "", author: "", description: "", version: "", id: "" };
-    const metaRegex = /\/\*\*([^*]|[\r\n]|(\*+([^*/]|[\r\n])))*\*+\//;
-    const metaMatch = metaRegex.exec(css);
-    if (!metaMatch) return null;
-    const metaBlock = metaMatch[0];
-    const nameMatch = /@name\s+(.+)/i.exec(metaBlock);
-    const authorMatch = /@author\s+(.+)/i.exec(metaBlock);
-    const descMatch = /@description\s+(.+)/i.exec(metaBlock);
-    const versionMatch = /@version\s+(.+)/i.exec(metaBlock);
-    if (nameMatch) meta.name = nameMatch[1].trim();
-    if (authorMatch) meta.author = authorMatch[1].trim();
-    if (descMatch) meta.description = descMatch[1].trim();
-    if (versionMatch) meta.version = versionMatch[1].trim();
-    meta.id = meta.name || filename.replace(/\.theme\.css$/, "");
-    return meta;
+    if (!css.split("\n", 1)[0].includes("/**")) return null;
+    const meta = parseJsDoc(css, filename);
+    const name = typeof meta.name === "string" ? meta.name : "";
+    return {
+        ...meta,
+        name,
+        author: typeof meta.author === "string" && meta.author ? meta.author : "Unknown Author",
+        version: typeof meta.version === "string" && meta.version ? meta.version : "???",
+        description: typeof meta.description === "string" && meta.description ? meta.description : "Description not provided.",
+        id: name || filename,
+        slug: filename.replace(".theme.css", "").replaceAll(" ", "-"),
+    };
 }
 function extractCustomProperties(css: string) {
     const propertyRegex = /@property\s+--([A-Za-z0-9-_]+)\s*\{(.+?)\}/gs;
@@ -701,7 +701,7 @@ export const ThemesHolder = {
         const theme = this.get(idOrFilename);
         if (!theme) return;
         theme.enabled = true;
-        DOMHolder.injectTheme(theme.id + "-theme", theme.css);
+        DOMHolder.injectTheme(theme.slug + "-theme-container", theme.css);
         const themeStates = Settings.plugins[PLUGIN_NAME].themesStatus || {};
         themeStates[theme.id] = true;
         Settings.plugins[PLUGIN_NAME].themesStatus = themeStates;
@@ -710,7 +710,7 @@ export const ThemesHolder = {
         const theme = this.get(idOrFilename);
         if (!theme) return;
         theme.enabled = false;
-        DOMHolder.removeTheme(theme.id + "-theme");
+        DOMHolder.removeTheme(theme.slug + "-theme-container");
         const themeStates = Settings.plugins[PLUGIN_NAME].themesStatus || {};
         themeStates[theme.id] = false;
         Settings.plugins[PLUGIN_NAME].themesStatus = themeStates;
@@ -738,11 +738,9 @@ export const ThemesHolder = {
             compat_logger.error("Failed to parse theme metadata:", theme.filename);
             return;
         }
+        if (wasEnabled) this.disable(idOrFilename);
         Object.assign(theme, { ...meta, css, properties: extractCustomProperties(css) });
-        if (wasEnabled) {
-            this.disable(idOrFilename);
-            this.enable(idOrFilename);
-        }
+        if (wasEnabled) this.enable(theme.id);
     },
     loadTheme(filename: string): AssembledTheme | null {
         const fs = window.require("fs");
@@ -779,7 +777,8 @@ export const ThemesHolder = {
     }
 };
 // BD Commands registry - tracks which commands belong to which caller
-const commandRegistry = new Map<string, Set<string>>();
+const commandRegistry = new Map<string, Map<string, string>>();
+const CommandIcons = findByPropsLazy("BOT_AVATARS");
 export const CommandsHolder = {
     Types: {
         CommandTypes: {
@@ -829,122 +828,99 @@ export const CommandsHolder = {
         }
     },
     register(caller: string, command: any) {
-        if (!caller || typeof caller !== "string") {
-            throw new Error("Commands.register: caller must be a string");
-        }
-        if (!command?.id || !command?.name || typeof command.execute !== "function") {
-            throw new Error("Commands.register: command must have id, name, and execute function");
-        }
-        const vencordCommand = this._translateCommand(caller, command);
-        const fullId = `bd-${caller}-${command.id}`;
+        if (caller === "BetterDiscord") throw new Error("Plugins cannot register commands as BetterDiscord");
+        if (typeof caller !== "string" || typeof command !== "object" || !command?.id || !command.name || !command.execute) return;
+        const callerCommands = commandRegistry.get(caller) ?? new Map<string, string>();
+        if (callerCommands.has(command.id)) throw new Error(`Command '${command.id}' is already registered by ${caller}.`);
+        let { name } = command;
         try {
-            VencordCommands.registerCommand(vencordCommand, `BD:${caller}`);
-            if (!commandRegistry.has(caller)) {
-                commandRegistry.set(caller, new Set());
-            }
-            commandRegistry.get(caller)!.add(fullId);
-            return () => this.unregister(caller, command.id);
-        } catch (err) {
-            compat_logger.error(`Failed to register command ${command.name}:`, err);
-            throw err;
+            VencordCommands.registerCommand(CommandsHolder._translateCommand(name, caller, command), `BD:${caller}`);
+        } catch {
+            name = `bd-${caller}-${command.id}`;
+            VencordCommands.registerCommand(CommandsHolder._translateCommand(name, caller, command), `BD:${caller}`);
         }
+        commandRegistry.set(caller, callerCommands.set(command.id, name));
+        return () => CommandsHolder.unregister(caller, command.id);
     },
     unregister(caller: string, commandId: string) {
-        const fullId = `bd-${caller}-${commandId}`;
-        try {
-            VencordCommands.unregisterCommand(fullId);
-            commandRegistry.get(caller)?.delete(fullId);
-            if (commandRegistry.get(caller)?.size === 0) {
-                commandRegistry.delete(caller);
-            }
-        } catch (err) {
-            compat_logger.warn(`Failed to unregister command ${commandId}:`, err);
-        }
+        if (typeof caller !== "string") return;
+        const callerCommands = commandRegistry.get(caller);
+        const name = callerCommands?.get(commandId);
+        if (!callerCommands || !name) return;
+        VencordCommands.unregisterCommand(name);
+        callerCommands.delete(commandId);
+        if (!callerCommands.size) commandRegistry.delete(caller);
     },
     unregisterAll(caller: string) {
-        const commands = commandRegistry.get(caller);
-        if (!commands) return;
-        for (const cmdId of Array.from(commands)) {
-            const shortId = cmdId.replace(`bd-${caller}-`, "");
-            this.unregister(caller, shortId);
-        }
-        commandRegistry.delete(caller);
+        for (const id of [...commandRegistry.get(caller)?.keys() ?? []]) CommandsHolder.unregister(caller, id);
     },
     getCommandsByCaller(caller: string) {
-        const commandIds = commandRegistry.get(caller);
-        if (!commandIds) return [];
-        return Array.from(commandIds).map(fullId => {
-            const cmd = VencordCommands.commands[fullId];
-            return cmd ? this._translateToOriginal(cmd) : null;
-        }).filter(Boolean);
+        return [...commandRegistry.get(caller)?.values() ?? []].map(name => VencordCommands.commands[name]).filter(Boolean);
     },
-    _translateCommand(caller: string, bdCommand: any) {
-        const fullId = `bd-${caller}-${bdCommand.id}`;
+    _translateCommand(name: string, caller: string, command: any) {
         return {
-            name: fullId,
-            description: bdCommand.description || "No description provided",
-            inputType: bdCommand.inputType ?? 0,
-            options: this._translateOptions(bdCommand.options),
+            ...command,
+            id: undefined,
+            name,
+            displayName: command.name,
+            untranslatedName: command.name,
+            description: command.description || "",
+            displayDescription: command.description || "",
+            __registerId: `bd-${caller}-${command.id}`,
+            inputType: 0,
+            options: CommandsHolder._translateOptions(command.options),
             execute: (args: any[], ctx: any) => {
                 try {
-                    const bdArgs = args.map(arg => ({
-                        name: arg.name,
-                        type: arg.type,
-                        value: arg.value
-                    }));
-                    const result = bdCommand.execute(bdArgs, {
-                        channel: ctx.channel,
-                        guild: ctx.guild
-                    });
-                    if (result && typeof result === "object") {
-                        Promise.resolve(result).then(res => {
-                            if (res && (res.content || res.embeds)) {
-                                let embedsArray: any[] = [];
-                                if (Array.isArray(res.embeds)) embedsArray = res.embeds;
-                                else if (res.embeds) embedsArray = [res.embeds];
-
-                                VencordCommands.sendBotMessage(ctx.channel.id, {
-                                    content: res.content,
-                                    embeds: embedsArray
-                                });
-                            }
-                        }).catch(err => {
-                            compat_logger.error(`Command ${bdCommand.name} execution error:`, err);
-                        });
-                    }
+                    const result = command.execute(args, { channel: ctx.channel, guild: ctx.guild });
+                    if (!("inputType" in command) || command.inputType === 0) sendBdBotMessage(result, ctx.channel.id);
                     return result;
                 } catch (err) {
-                    compat_logger.error(`Error executing command ${bdCommand.name}:`, err);
-                    throw err;
+                    compat_logger.error(`Failed to run execute() for command ${command.name}`, err);
                 }
-            },
-            predicate: bdCommand.predicate
+            }
         };
     },
-    _translateOptions(bdOptions?: any[]) {
-        if (!bdOptions || !Array.isArray(bdOptions)) return undefined;
-        return bdOptions.map(opt => ({
-            name: opt.name,
-            description: opt.description || "No description",
-            type: opt.type,
-            required: opt.required ?? false,
-            choices: opt.choices?.map(c => ({
-                name: c.name,
-                value: c.value,
-                displayName: c.name
-            }))
-        }));
-    },
-    _translateToOriginal(vencordCmd: any) {
-        return {
-            id: vencordCmd.name.split("-").pop(),
-            name: vencordCmd.name,
-            description: vencordCmd.description,
-            options: vencordCmd.options,
-            execute: vencordCmd.execute
-        };
+    _translateOptions(options?: any[]) {
+        return options?.map(o => ({
+            ...o,
+            required: o.required ?? false,
+            options: CommandsHolder._translateOptions(o.options),
+            choices: o.choices?.map(c => ({ ...c, displayName: c.name }))
+        })) ?? [];
     }
 };
+class CommandsWrapper {
+    readonly #label: string;
+    constructor(label: string) {
+        this.#label = label;
+    }
+    get Types() { return CommandsHolder.Types; }
+    get register() { return (command: any) => CommandsHolder.register(this.#label, command); }
+    get unregister() { return (commandId: string) => CommandsHolder.unregister(this.#label, commandId); }
+    get unregisterAll() { return () => CommandsHolder.unregisterAll(this.#label); }
+    get getCommandsByCaller() { return () => CommandsHolder.getCommandsByCaller(this.#label); }
+}
+async function sendBdBotMessage(result: unknown, channelId: string) {
+    let res: any;
+    try {
+        res = await result;
+    } catch (err) {
+        compat_logger.error("Command execution failed", err);
+        return;
+    }
+    if (!res || typeof res !== "object" || Array.isArray(res)) return;
+    const content = typeof res.content === "string" ? res.content : undefined;
+    const embeds = res.embeds && typeof res.embeds === "object"
+        ? (Array.isArray(res.embeds) ? res.embeds : [res.embeds]).map(e => ({ ...e, type: e.type || "rich" }))
+        : [];
+    if (!content && !embeds.length) return;
+    CommandIcons.BOT_AVATARS.betterdiscord ??= "https://github.com/BetterDiscord.png";
+    VencordCommands.sendBotMessage(channelId, {
+        content,
+        embeds,
+        author: { id: "676620914632294467", username: "BetterDiscord", avatar: "betterdiscord", bot: true }
+    });
+}
 const getOptions = (args: any[], defaultOptions = {}) => {
     if (args.length > 1) {
         const lastArg = args.at(-1);
@@ -955,50 +931,9 @@ const getOptions = (args: any[], defaultOptions = {}) => {
     return defaultOptions;
 };
 
-/**
- * Creates an exception for webpack module search failures.
- * Matches BetterDiscord's makeException from webpack/shared.ts
- */
-const makeWebpackException = () => new Error("Module search failed!");
-
-/** Post-processes getBulk results: checks fatal conditions and initializes empty map results. */
-function _getBulkPostProcess(
-    mapping: { all?: boolean; fatal?: boolean; map?: Record<string, (exp: any) => boolean>; }[],
-    result: any[]
-) {
-    for (let index = 0; index < mapping.length; index++) {
-        const query = mapping[index];
-        const exists = index in result;
-        if (query.fatal) {
-            if (query.all && (!Array.isArray(result[index]) || result[index].length === 0)) {
-                throw makeWebpackException();
-            }
-            if (!exists) throw makeWebpackException();
-        }
-        if (query.map && !exists) {
-            result[index] = {};
-        }
-    }
-}
-
-/** Tries to match a module export key against mappers and define a proxy property. */
-function _mapMangledTryMatch(
-    module: any, mappers: Record<string, (exp: any) => boolean>,
-    mapped: Record<string, any>, mapperKeys: string[], searchKey: string
-) {
-    for (const key of mapperKeys) {
-        if (!Object.hasOwn(mappers, key)) continue;
-        if (Object.hasOwn(mapped, key)) continue;
-        if (mappers[key](module[searchKey])) {
-            Object.defineProperty(mapped, key, {
-                get() { return module[searchKey]; },
-                set(value) { module[searchKey] = value; },
-                enumerable: true,
-                configurable: false
-            });
-        }
-    }
-}
+const toSourceFilter = (filter: any) => typeof filter === "string" || filter instanceof RegExp
+    ? WebpackHolder.Filters.bySource(filter)
+    : Array.isArray(filter) ? WebpackHolder.Filters.bySource(...filter) : filter;
 
 export const WebpackHolder = {
     Filters: {
@@ -1042,10 +977,11 @@ export const WebpackHolder = {
         },
         bySource(...something) {
             const moduleCache = Vencord.Webpack.wreq.m;
-            return (_unused: unknown, module: { id?: number; }) => {
-                if (!module?.id) return false;
+            return (_unused: unknown, module: { id?: PropertyKey; }, moduleId?: PropertyKey) => {
+                const id = module?.id ?? moduleId;
+                if (id == null) return false;
                 let source: string;
-                try { source = String(moduleCache[module.id]); }
+                try { source = String(moduleCache[id as string]); }
                 catch { return false; }
                 return something.every(search =>
                     typeof search === "string" ? source.includes(search) : search.test(source)
@@ -1053,7 +989,23 @@ export const WebpackHolder = {
             };
         },
         byPrototypeKeys(...fields) {
-            return x => x.prototype && fields.flat().every(field => field in x.prototype);
+            return x => (typeof x === "object" || typeof x === "function") && x?.prototype != null && fields.flat().every(field => field in x.prototype);
+        },
+        byDestructure(...properties: string[]) {
+            return (module: any) => {
+                if (typeof module !== "function") return false;
+                const str = String(module);
+                let end = str.indexOf("}=");
+                while (end !== -1) {
+                    const start = str.lastIndexOf("{", end);
+                    if (start !== -1) {
+                        const names = str.substring(start + 1, end).split(",").map(p => p.split(":")[0].split("=")[0].trim());
+                        if (properties.every(p => names.includes(p))) return true;
+                    }
+                    end = str.indexOf("}=", end + 2);
+                }
+                return false;
+            };
         },
         byRegex(search, filter = m => m) {
             return module => {
@@ -1099,58 +1051,19 @@ export const WebpackHolder = {
     },
     find(filter) { return WebpackHolder.getModule(filter, { first: true }); },
     findAll(filter) { return WebpackHolder.getModule(filter, { first: false }); },
-    getModule(...args: Parameters<typeof BdApi_getModule>) {
-        if (args[1]?.raw === true) {
-            const fn = args[0];
-            const final = { id: 0, exports: null };
-            BdApi_getModule((wrappedExport, module, index) => {
-                const result = fn(wrappedExport, module, index);
-                if (result) {
-                    final.exports = module.exports;
-                    final.id = Number.parseInt(index, 10);
-                }
-                return result;
-            }, args[1]);
-            return final.exports === null ? undefined : final;
-        }
-        return BdApi_getModule(...args);
+    getModule(filter, options: BdWebpack.SearchOptions = {}) {
+        const { first = true, ...rest } = options;
+        return first ? BdWebpack.getModule(filter, rest) : BdWebpack.getAllModules(filter, rest);
     },
-    waitForModule(filter, options?) {
-        if (options) return WebpackHolder.getLazy(filter, options);
-        return new Promise(resolve => {
-            Vencord.Webpack.waitFor(filter, module => resolve(module));
-        });
+    waitForModule(filter, options: BdWebpack.SearchOptions = {}) {
+        return BdWebpack.getLazy(filter, options);
     },
-    getLazy(filter, options: any = {}) {
-        const { signal: abortSignal, defaultExport = true, searchExports = false, raw = false, fatal = false } = options;
-
-        // Early abort check - matches BD's implementation from PR #2007
-        if (abortSignal?.aborted) {
-            if (fatal) return Promise.reject(makeWebpackException());
-            return Promise.resolve(undefined);
-        }
-
-        const fromCache = WebpackHolder.getModule(filter, { defaultExport, searchExports });
-        if (fromCache) return Promise.resolve(fromCache);
-
-        return new Promise((resolve, reject) => {
-            const cancel = () => {
-                if (fatal) {
-                    reject(makeWebpackException());
-                } else {
-                    resolve(undefined);
-                }
-            };
-            Vencord.Webpack.waitFor(filter, () => {
-                const result = WebpackHolder.getModule(filter, { defaultExport, searchExports });
-                if (raw) {
-                    resolve({ exports: result });
-                } else {
-                    resolve(result);
-                }
-            });
-            abortSignal?.addEventListener("abort", cancel);
-        });
+    get getLazy() { return WebpackHolder.waitForModule; },
+    getProxy(filter, options: BdWebpack.SearchOptions = {}) {
+        return BdWebpack.getProxy(filter, options);
+    },
+    getMangledProxy(filter, mappers, options: BdWebpack.SearchOptions = {}) {
+        return BdWebpack.getMangledProxy(toSourceFilter(filter), mappers, options);
     },
     getModuleWithKey(filter) {
         let target, id, key;
@@ -1162,6 +1075,7 @@ export const WebpackHolder = {
             }
             return matched;
         }, { searchExports: true });
+        if (!target) return [undefined, undefined];
         for (const k in target.exports) {
             if (filter(target.exports[k], target, id)) {
                 key = k;
@@ -1187,9 +1101,8 @@ export const WebpackHolder = {
         return WebpackHolder.getModule(WebpackHolder.Filters.byProps(...props), moreOpts);
     },
     get getByKeys() { return WebpackHolder.getByProps.bind(WebpackHolder); },
-    getModules(...etc) {
-        const [first, ...rest] = etc;
-        return WebpackHolder.getModule(first, { ...Object.assign({}, ...rest), first: false });
+    getModules(filter, options: BdWebpack.SearchOptions = {}) {
+        return BdWebpack.getAllModules(filter, options);
     },
     getByPrototypes(...fields) {
         const moreOpts = getOptions(fields);
@@ -1244,17 +1157,8 @@ export const WebpackHolder = {
      * Gets a webpack module directly by its ID.
      * Matches BetterDiscord's getById from webpack/utilities.ts
      */
-    getById(id: PropertyKey, options: { raw?: boolean; fatal?: boolean; } = {}) {
-        const { raw = false, fatal = false } = options;
-        const webpackCache = Vencord.Webpack.wreq?.c;
-        const module = webpackCache?.[id];
-        if (module?.exports && typeof module.exports === "object") {
-            return raw ? module : module.exports;
-        }
-        if (fatal) {
-            throw new Error(`[WebpackModules] Module with id "${String(id)}" not found.`);
-        }
-        return undefined;
+    getById(id: PropertyKey, options: BdWebpack.SearchOptions = {}) {
+        return BdWebpack.getById(id, options);
     },
     Stores: (() => {
         let Flux: any = null;
@@ -1300,33 +1204,8 @@ export const WebpackHolder = {
             set() { throw new Error("[WebpackModules~modules] Setting modules is not allowed."); }
         });
     },
-    getMangled(filter, mangled, options: any = {}) {
-        const { raw = false, ...rest } = options;
-
-        // Convert string/RegExp filter to bySource filter
-        if (typeof filter === "string" || filter instanceof RegExp) {
-            filter = WebpackHolder.Filters.bySource(filter);
-        }
-
-        // Get the module - support numeric ID or filter function
-        let module = typeof filter === "number"
-            ? WebpackHolder.require.c?.[filter]?.exports
-            : WebpackHolder.getModule(filter, { raw, ...rest });
-
-        if (!module) return {} as typeof mangled;
-        if (raw) module = module.exports;
-
-        // Map the mangled exports to friendly names
-        const returnValue = WebpackHolder._mapMangledObject(module, mangled);
-
-        // Store reference to original module (BD uses Symbol, we use hidden prop)
-        Object.defineProperty(returnValue, "__mangledModule", {
-            value: module,
-            configurable: false,
-            enumerable: false
-        });
-
-        return returnValue;
+    getMangled(filter, mappers, options: BdWebpack.SearchOptions = {}) {
+        return BdWebpack.getMangled(toSourceFilter(filter), mappers, options);
     },
     getWithKey(filter, options: { target?: any; } = {}) { /* Simplified the over-complicated getWithKey to match BD latest, for best compatibility and maintainability */
         const { target: opt_target = null, ...rest } = options;
@@ -1340,63 +1219,12 @@ export const WebpackHolder = {
         }
         return generator();
     },
-    getBulk(...mapping: { filter: (m: any) => unknown, searchExports?: boolean, defaultExport?: boolean, searchDefault?: boolean, raw?: boolean, all?: boolean, fatal?: boolean, map?: Record<string, (exp: any) => boolean>; }[]) {
-        const len = mapping.length;
-        const result = new Array(len);
-
-        // Check if we can exit early (only when no queries have `all: true`)
-        const shouldExitEarly = mapping.every(m => !m.all);
-        const shouldExit = () => shouldExitEarly && mapping.every((query, index) => !query.all && index in result);
-
-        for (let i = 0; i < len; i++) {
-            const { filter, all = false, map: mappers, ...opts } = mapping[i];
-            if (all) {
-                // Return all matching modules
-                result[i] = WebpackHolder.getModule(filter, { ...opts, first: false }) || [];
-            } else {
-                const mod = WebpackHolder.getModule(filter, opts);
-                // If mappers provided, use getMangled-style mapping
-                result[i] = mappers && mod ? WebpackHolder._mapMangledObject?.(mod, mappers) ?? mod : mod;
-            }
-
-            // Early exit optimization from BD PR #2007
-            if (shouldExit()) break;
-        }
-
-        // Handle fatal option and map defaults - matches BD PR #2007
-        _getBulkPostProcess(mapping, result);
-
-        return result;
+    getBulk(...queries: BdWebpack.BulkQuery[]) {
+        return BdWebpack.getBulk(...queries);
     },
-    /**
-     * Internal helper that maps mangled module exports to friendly names.
-     * Creates getters/setters so changes propagate to the original module.
-     */
-    _mapMangledObject(module: any, mappers: Record<string, (exp: any) => boolean>) {
-        const mapped: Record<string, any> = {};
-        const moduleKeys = Object.keys(module);
-        const mapperKeys = Object.keys(mappers);
-
-        for (const searchKey of moduleKeys) {
-            if (!Object.hasOwn(module, searchKey)) continue;
-            _mapMangledTryMatch(module, mappers, mapped, mapperKeys, searchKey);
-        }
-        for (const key of mapperKeys) {
-            if (!Object.hasOwn(mapped, key)) {
-                Object.defineProperty(mapped, key, { value: undefined, enumerable: true, configurable: false });
-            }
-        }
-        return mapped;
-    },
-    /**
-     * Like getBulk but accepts a keyed object of queries and returns a keyed object of results.
-     * Matches BetterDiscord's getBulkKeyed from webpack/utilities.ts
-     */
-    getBulkKeyed<T extends object>(queries: Record<keyof T, { filter: (m: any) => unknown, searchExports?: boolean, defaultExport?: boolean, searchDefault?: boolean, raw?: boolean, all?: boolean, fatal?: boolean, map?: Record<string, (exp: any) => boolean>; }>): T {
-        const modules = WebpackHolder.getBulk(...Object.values(queries) as any[]); // NOSONAR: Type assertion required for TypeScript to accept spread of Object.values
-        return Object.fromEntries(
-            Object.keys(queries).map((key, index) => [key, modules[index]])
-        ) as T;
+    _mapMangledObject: BdWebpack.mapObject,
+    getBulkKeyed(queries: Record<string, BdWebpack.BulkQuery>) {
+        return BdWebpack.getBulkKeyed(queries);
     },
     /**
      * Alias for getBulkKeyed for compatibility.
@@ -1589,36 +1417,20 @@ export const DataHolder = {
      * @returns true if recache was successful, false otherwise
      */
     async recache(pluginName: string): Promise<boolean> {
-        if (!pluginName) return false;
-
-        // Clear in-memory cache
-        delete this.pluginData[pluginName];
-
-        const p = PluginsHolder.folder + "/" + pluginName + ".config.json";
-        const fs = window.require("fs");
-
-        if (!fs.existsSync(p)) {
-            this.pluginData[pluginName] = {};
-            return true;
-        }
-
+        this.latestDataCheck(pluginName);
+        const before = this.pluginData[pluginName];
+        let after: Record<string, unknown>;
         try {
-            const text = fs.readFileSync(p, "utf8");
-            const newData = JSON.parse(text);
-            this.pluginData[pluginName] = newData;
-
-            // Notify all listeners about the recache
-            // For each key in the new data, notify per-key listeners
-            for (const key of Object.keys(newData)) {
-                notifyDataChange(pluginName, key, newData[key]);
-            }
-
-            return true;
+            after = JSON.parse(window.require("fs").readFileSync(PluginsHolder.folder + "/" + pluginName + ".config.json", "utf8"));
         } catch (e) {
             compat_logger.error(`Failed to recache data for ${pluginName}:`, e);
-            this.pluginData[pluginName] = {};
             return false;
         }
+        this.pluginData[pluginName] = after;
+        for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+            notifyDataChange(pluginName, key, after[key]);
+        }
+        return true;
     }
 };
 class DataWrapper {
@@ -1705,36 +1517,8 @@ class DataWrapper {
         };
     }
 }
-let _cachedUseStateFromStores: any = null;
-function getUseStateFromStores() {
-    if (_cachedUseStateFromStores) return _cachedUseStateFromStores;
-    try {
-        _cachedUseStateFromStores = Vencord.Webpack.Common.useStateFromStores;
-        if (_cachedUseStateFromStores) return _cachedUseStateFromStores;
-    } catch { }
-    try {
-        _cachedUseStateFromStores = getGlobalApi().Webpack.getModule(
-            m => m?.toString?.()?.includes("useStateFromStores"),
-            { searchExports: true }
-        );
-    } catch { }
-    return _cachedUseStateFromStores;
-}
 export const HooksHolder = {
-    useStateFromStores<T>(
-        stores: unknown,
-        selector: () => T,
-        deps?: readonly unknown[],
-        comparator?: (a: T, b: T) => boolean
-    ): T {
-        const hook = getUseStateFromStores();
-        const storesArray = Array.isArray(stores) ? stores : [stores];
-        if (hook) {
-            return hook(storesArray, selector, deps, comparator);
-        }
-        compat_logger.warn("useStateFromStores: Discord hook not found, using non-reactive fallback");
-        return selector();
-    },
+    useStateFromStores: bdUseStateFromStores,
     useForceUpdate(): [number, (action: any) => void] {
         return getGlobalApi().React.useReducer((n: number) => n + 1, 0);
     },
@@ -1753,14 +1537,7 @@ class HooksWrapper {
     constructor(callerName: string) {
         this.#callerName = callerName;
     }
-    useStateFromStores<T>(
-        stores: unknown,
-        selector: () => T,
-        deps?: readonly unknown[],
-        comparator?: (a: T, b: T) => boolean
-    ): T {
-        return HooksHolder.useStateFromStores(stores, selector, deps, comparator);
-    }
+    useStateFromStores = bdUseStateFromStores;
     useForceUpdate(): [number, (action: any) => void] {
         return HooksHolder.useForceUpdate();
     }
@@ -1768,302 +1545,10 @@ class HooksWrapper {
         return HooksHolder.useData<T>(this.#callerName, key);
     }
 }
-type SettingsType = {
-    type: string,
-    id: string,
-    name: string,
-    note?: string,
-    settings?: SettingsType[],
-    collapsible?: boolean,
-    shown?: boolean,
-    value?: any,
-    options?: { label: string, value: number; }[],
-};
 const _ReactDOM_With_createRoot = {} as typeof Vencord.Webpack.Common.ReactDOM & { createRoot: typeof Vencord.Webpack.Common.createRoot; };
-const BD_CM_STYLE_ID = "bd-confirmation-styles";
-type BdCmRecord = { root: any; host: HTMLElement; onClose?: () => void; };
-const BD_CM_REGISTRY = new Map<string, BdCmRecord>();
-function BD_CM_ensureStyles() {
-    getGlobalApi().DOM.addStyle(BD_CM_STYLE_ID, `
-/* Backdrop */
-.bd-cm-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:999998;opacity:0;animation:bd-cm-fade-in .12s ease forwards}
-@keyframes bd-cm-fade-in{to{opacity:1}}
-/* Layer */
-.bd-cm-layer{position:fixed;inset:0;z-index:999999;display:grid;place-items:center;pointer-events:none}
-/* Card */
-.bd-cm-root{pointer-events:auto;width:min(520px,calc(100vw - 24px));max-height:calc(100vh - 24px);
- background:var(--modal-background);color:var(--text-default);border-radius:var(--radius-md);
- border:1px solid var(--border-normal);box-shadow:0 16px 40px rgba(0,0,0,.4),0 4px 12px rgba(0,0,0,.2);
- transform:translateY(8px) scale(.985);opacity:0;animation:bd-cm-pop .15s ease forwards;display:flex;flex-direction:column;font-family:var(--font-primary,inherit)}
-@keyframes bd-cm-pop{to{transform:translateY(0) scale(1);opacity:1}}
-.bd-cm-header{padding:16px}
-.bd-cm-title{margin:0;font-size:20px;line-height:24px;font-weight:700;color:var(--mobile-text-heading-primary,var(--text-default))}
-.bd-cm-body{padding:12px 16px 0 16px;overflow:auto;max-height:calc(100vh - 220px);font-size:16px;line-height:20px;color:var(--text-default)}
-.bd-cm-footer{padding:12px 16px 16px;background:var(--modal-footer-background,transparent);border-top:1px solid var(--border-normal);display:flex;gap:8px;justify-content:flex-end}
-.bd-cm-btn{appearance:none;border:0;border-radius:6px;padding:8px 12px;font-weight:600;cursor:pointer;transition:filter .12s ease,transform .12s ease,opacity .12s ease,background-color .12s ease,color .12s ease;font-family:var(--font-primary,inherit)}
-.bd-cm-btn.secondary{background:transparent;color:var(--interactive-text-default);border:1px solid var(--border-normal)}
-.bd-cm-btn.secondary:hover{color:var(--interactive-text-hover)}
-.bd-cm-btn.primary{background:var(--brand-500);color:var(--white-500,#fff)}
-.bd-cm-btn.primary:hover{filter:brightness(1.05)}
-.bd-cm-btn.primary:active{transform:translateY(1px)}
-.bd-cm-btn.danger{background:var(--status-danger);color:var(--white-500,#fff)}
-.bd-cm-btn[disabled]{opacity:.6;cursor:default}
-`);
-}
-function BD_CM_genKey() {
-    return `cm_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
-}
-function BD_CM_isTextEntry(el: Element | null): boolean {
-    if (!el) return false;
-    const tag = el.tagName?.toLowerCase();
-    if (tag === "textarea") return true;
-    if (tag === "input") {
-        const type = (el as HTMLInputElement).type?.toLowerCase();
-        return !["button", "checkbox", "radio", "submit", "reset", "color", "file", "range"].includes(type);
-    }
-    return (el as HTMLElement).isContentEditable === true;
-}
-function BD_CM_Inner(props: {
-    title: string;
-    content: any;
-    danger?: boolean;
-    confirmText?: string | null;
-    cancelText?: string | null;
-    onConfirm?: () => void | Promise<void>;
-    onCancel?: () => void | Promise<void>;
-    onRequestClose: (reason: "confirm" | "cancel" | "close") => void;
-}) {
-    const R = getGlobalApi().React;
-    const [busy, setBusy] = R.useState(false);
-    const confirmRef = R.useRef<HTMLButtonElement | null>(null);
-    const doConfirm = R.useCallback(async () => {
-        if (busy) return;
-        try { setBusy(true); await props.onConfirm?.(); props.onRequestClose("confirm"); }
-        catch { /* keep open if handler throws */ }
-        finally { setBusy(false); }
-    }, [busy, props.onConfirm, props.onRequestClose]);
-    const doCancel = R.useCallback(async () => {
-        if (busy) return;
-        try { setBusy(true); await props.onCancel?.(); }
-        finally { setBusy(false); props.onRequestClose("cancel"); }
-    }, [busy, props.onCancel, props.onRequestClose]);
-    R.useEffect(() => {
-        const onKey = (e: KeyboardEvent) => {
-            if (e.key === "Escape") { e.stopPropagation(); doCancel(); return; }
-            if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
-                if (BD_CM_isTextEntry(document.activeElement)) return;
-                e.preventDefault(); doConfirm();
-            }
-        };
-        window.addEventListener("keydown", onKey, true);
-        const t = setTimeout(() => { try { (confirmRef.current as any)?.focus?.(); } catch { } }, 0);
-        return () => { window.removeEventListener("keydown", onKey, true); clearTimeout(t); };
-    }, [doCancel, doConfirm]);
-    const REl = R.createElement;
-    const contentNodes = Array.isArray(props.content) ? props.content : [props.content];
-    return R.createElement(R.Fragment, null,
-        REl("div", { className: "bd-cm-backdrop", onClick: doCancel }),
-        REl("div", { className: "bd-cm-layer", role: "dialog", "aria-modal": "true", "aria-label": "Confirmation dialog" },
-            REl("div", { className: "bd-cm-root", onClick: (e: MouseEvent) => e.stopPropagation() as any },
-                REl("header", { className: "bd-cm-header" },
-                    REl("h3", { className: "bd-cm-title" }, props.title)
-                ),
-                REl("div", { className: "bd-cm-body" },
-                    ...contentNodes.map((n, i) => REl(R.Fragment, { key: i }, n))
-                ),
-                REl("footer", { className: "bd-cm-footer" },
-                    props.cancelText === null ? null :
-                        REl("button", {
-                            className: "bd-cm-btn secondary",
-                            onClick: doCancel,
-                            disabled: busy,
-                            "aria-label": props.cancelText ?? "Cancel"
-                        }, props.cancelText ?? "Cancel"),
-                    REl("button", {
-                        ref: confirmRef as any,
-                        className: `bd-cm-btn ${props.danger ? "danger" : "primary"}`,
-                        onClick: doConfirm,
-                        disabled: busy,
-                        "aria-label": props.confirmText ?? "Okay"
-                    }, props.confirmText ?? "Okay")
-                )
-            )
-        )
-    );
-}
-// Open/close helpers exposed to UIHolder
-function BD_CM_open(
-    title: string,
-    content: any,
-    options: {
-        danger?: boolean;
-        confirmText?: string;
-        cancelText?: string | null;
-        onConfirm?: () => void | Promise<void>;
-        onCancel?: () => void | Promise<void>;
-        onClose?: () => void;
-    } = {}
-): string {
-    BD_CM_ensureStyles();
-    const host = document.createElement("div");
-    host.className = "bd-cm-host";
-    document.body.appendChild(host);
-    const key = BD_CM_genKey();
-    const root = getGlobalApi().ReactDOM.createRoot(host);
-    const onRequestClose = (_reason: "confirm" | "cancel" | "close") => BD_CM_close(key);
-    BD_CM_REGISTRY.set(key, { root, host, onClose: options.onClose });
-    root.render(getGlobalApi().React.createElement(BD_CM_Inner, {
-        title,
-        content,
-        danger: !!options.danger,
-        confirmText: options.confirmText,
-        cancelText: options.cancelText ?? "Cancel",
-        onConfirm: options.onConfirm,
-        onCancel: options.onCancel,
-        onRequestClose
-    }));
-    return key;
-}
-function BD_CM_close(key: string) {
-    const rec = BD_CM_REGISTRY.get(key);
-    if (!rec) return;
-    try { rec.root?.unmount?.(); } finally {
-        try { rec.host.remove(); } catch { }
-        try { rec.onClose?.(); } catch { }
-        BD_CM_REGISTRY.delete(key);
-    }
-}
-function BD_CM_closeAll() {
-    for (const k of Array.from(BD_CM_REGISTRY.keys())) BD_CM_close(k);
-}
-function _createSettingComponent(setting: any, categoryId: string | null, onChangeCallback: (catId: string | null, settingId: string, value: any) => void) {
-    const { React } = getGlobalApi();
-    const fakeOption: any = { description: setting.note || "", type: 0 };
-    switch (setting.type) {
-        case "number":
-            fakeOption.type = OptionType.NUMBER;
-            break;
-        case "switch":
-            fakeOption.type = OptionType.BOOLEAN;
-            break;
-        case "text":
-        case "textbox":
-            fakeOption.type = OptionType.STRING;
-            break;
-        case "dropdown":
-            fakeOption.type = OptionType.SELECT;
-            fakeOption.options = setting.options || [];
-            break;
-        case "slider":
-            fakeOption.type = OptionType.COMPONENT;
-            fakeOption.component = () => React.createElement(SliderSettingComponent, {
-                value: setting.value ?? setting.min ?? 0,
-                min: setting.min ?? 0,
-                max: setting.max ?? 100,
-                step: setting.step,
-                units: setting.units,
-                markers: Array.isArray(setting.markers) ? setting.markers : undefined,
-                onChange: (v: number) => {
-                    setting.value = v;
-                    onChangeCallback(categoryId, setting.id, v);
-                },
-                disabled: setting.disabled
-            });
-            break;
-        case "color":
-            fakeOption.type = OptionType.COMPONENT;
-            fakeOption.component = () => React.createElement(ColorPickerSettingComponent, {
-                value: setting.value || "#000000",
-                defaultValue: setting.defaultValue,
-                colors: setting.colors,
-                disabled: setting.disabled,
-                onChange: (v: string) => {
-                    setting.value = v;
-                    onChangeCallback(categoryId, setting.id, v);
-                }
-            });
-            break;
-        case "keybind":
-            fakeOption.type = OptionType.COMPONENT;
-            fakeOption.component = p => React.createElement(KeybindSettingComponent, {
-                onChange: p.setValue,
-                option: setting,
-                id: setting.id,
-            });
-            break;
-        case "radio":
-            fakeOption.type = OptionType.COMPONENT;
-            fakeOption.component = p => React.createElement(RadioSettingComponent, {
-                onChange: p.setValue,
-                option: setting,
-                id: setting.id,
-            });
-            break;
-        case "button":
-            fakeOption.type = OptionType.COMPONENT;
-            fakeOption.component = () => React.createElement(
-                getGlobalApi().Components.Button,
-                {
-                    onClick: setting.onClick || (() => { }),
-                    disabled: setting.disabled || false
-                },
-                setting.children || setting.name
-            );
-            break;
-        case "custom":
-            fakeOption.type = OptionType.COMPONENT;
-            fakeOption.component = () => setting.children;
-            break;
-        default:
-            fakeOption.type = OptionType.COMPONENT;
-            fakeOption.component = () => React.createElement(React.Fragment, {},
-                `Unsupported setting type: ${setting.type}`);
-            break;
-    }
-    const ComponentClass = VenComponents[fakeOption.type];
-    const pluginSettings = { enabled: true, [setting.id]: setting.value };
-    return React.createElement(ComponentClass, {
-        id: setting.id,
-        key: setting.id,
-        option: fakeOption,
-        pluginSettings,
-        onChange: (newValue: any) => {
-            pluginSettings[setting.id] = newValue;
-            setting.onChange?.(newValue);
-            onChangeCallback(categoryId, setting.id, newValue);
-        }
-    });
-}
-
 // ============================================================================
 // Notification System (showNotification)
 // ============================================================================
-
-/**
- * Maps BD notification types to Vencord notification colors.
- */
-function bdTypeToVencordColor(type?: string): string | undefined {
-    switch (type) {
-        case "success": return "var(--status-positive)";
-        case "error": return "var(--status-danger)";
-        case "warning": return "var(--status-warning)";
-        case "info":
-        default: return undefined; // Use Vencord default (brand color)
-    }
-}
-
-/**
- * Determines if a notification needs our custom implementation.
- * Returns true if BD-specific features are used that Vencord doesn't support.
- */
-function needsCustomNotification(notification: Partial<BdNotification>): boolean {
-    // Vencord doesn't support: per-notification duration, actions, or close handles
-    return !!(
-        notification.duration !== undefined ||
-        (notification.actions && notification.actions.length > 0) ||
-        notification.id !== undefined
-    );
-}
 
 /**
  * Notification type for showNotification API.
@@ -2075,11 +1560,13 @@ interface BdNotification {
     type?: "info" | "success" | "error" | "warning";
     duration?: number;
     icon?: React.ComponentType<any> | null;
+    render?: React.ComponentType<{ notification: BdNotification; }>;
     actions?: Array<{
         label: string;
         onClick?: (e: MouseEvent) => void;
         dontClose?: boolean;
         dontCloseOnActionIfHoldingShiftKey?: boolean;
+        disabled?: boolean;
         color?: string;
         look?: string;
     }>;
@@ -2098,21 +1585,15 @@ const NotificationStore = {
     listeners: new Set<() => void>(),
 
     add(notification: BdNotification) {
-        // Prevent duplicates by ID
-        const existing = this.notifications.findIndex(n => n.id === notification.id);
-        if (existing === -1) {
-            this.notifications.push(notification);
-        } else {
-            this.notifications[existing] = notification;
-        }
+        this.notifications.push(notification);
         this.emit();
     },
 
-    remove(id: string) {
+    remove(id: string, notify = true) {
         const idx = this.notifications.findIndex(n => n.id === id);
         if (idx !== -1) {
             const removed = this.notifications.splice(idx, 1)[0];
-            removed?.onClose?.();
+            if (notify) removed?.onClose?.();
         }
         this.emit();
     },
@@ -2141,7 +1622,7 @@ const BD_NOTIF_STYLE_ID = "bd-notification-styles";
 const BD_NOTIF_CONTAINER_ID = "bd-notifications-container";
 
 function BD_NOTIF_ensureStyles() {
-    getGlobalApi().DOM.addStyle(BD_NOTIF_STYLE_ID, `
+    injectStyle(BD_NOTIF_STYLE_ID, `
 /* Container positioning */
 #${BD_NOTIF_CONTAINER_ID}{position:fixed;z-index:999997;pointer-events:none;display:flex;flex-direction:column;gap:8px;max-height:calc(100vh - 40px);overflow:hidden}
 #${BD_NOTIF_CONTAINER_ID}.bd-notif-top-right{top:20px;right:20px;align-items:flex-end}
@@ -2259,7 +1740,7 @@ function BD_NOTIF_Item(props: { notification: BdNotification; onClose: (id: stri
 
     // Progress timer
     R.useEffect(() => {
-        if (duration <= 0) return;
+        if (duration <= 0 || notification.render) return;
 
         const tick = () => {
             if (isPaused) return;
@@ -2308,11 +1789,22 @@ function BD_NOTIF_Item(props: { notification: BdNotification; onClose: (id: stri
         return `bd-notif-btn-${colorMap[(color || "").toLowerCase()] || "primary"}`;
     };
 
-    return R.createElement("div", {
+    const wrapperProps = {
         className: `bd-notif bd-notif-${type}${isClosing ? " bd-notif-closing" : ""}`,
         onMouseEnter: handleMouseEnter,
         onMouseLeave: handleMouseLeave
-    },
+    };
+
+    if (notification.render) {
+        return R.createElement("div", wrapperProps,
+            R.createElement(BdErrorBoundary, null, R.createElement(notification.render, { notification }))
+        );
+    }
+
+    const parseChild = (c: React.ReactNode) => typeof c === "string" ? parseMarkdown(c) : c;
+    const parsedContent = Array.isArray(content) ? content.map(parseChild) : parseChild(content);
+
+    return R.createElement("div", wrapperProps,
         // Header
         R.createElement("div", { className: "bd-notif-header" },
             R.createElement("div", { className: "bd-notif-icon" }, renderIcon()),
@@ -2325,7 +1817,7 @@ function BD_NOTIF_Item(props: { notification: BdNotification; onClose: (id: stri
         ),
         // Body
         content && R.createElement("div", { className: "bd-notif-body" },
-            content
+            parsedContent
         ),
         // Footer (actions)
         actions.length > 0 && R.createElement("div", { className: "bd-notif-footer" },
@@ -2333,6 +1825,7 @@ function BD_NOTIF_Item(props: { notification: BdNotification; onClose: (id: stri
                 R.createElement("button", {
                     key: idx,
                     className: `bd-notif-action ${getButtonClass(action.color, action.look)}`,
+                    disabled: action.disabled,
                     onClick: (e: MouseEvent) => {
                         e.stopPropagation();
                         action.onClick?.(e);
@@ -2401,6 +1894,13 @@ function BD_NOTIF_ensureContainer() {
     if (!BD_NOTIF_ROOT) {
         BD_NOTIF_ROOT = getGlobalApi().ReactDOM.createRoot(BD_NOTIF_HOST);
         BD_NOTIF_ROOT.render(getGlobalApi().React.createElement(BD_NOTIF_Container, {}));
+        onCleanup(() => {
+            BD_NOTIF_ROOT?.unmount();
+            BD_NOTIF_HOST?.remove();
+            BD_NOTIF_ROOT = null;
+            BD_NOTIF_HOST = null;
+            NotificationStore.notifications = [];
+        });
     }
 }
 
@@ -2409,6 +1909,13 @@ function BD_NOTIF_ensureContainer() {
  */
 function BD_NOTIF_show(notificationObj: Partial<BdNotification>): { id: string; isVisible: () => boolean; close: () => void; } {
     BD_NOTIF_ensureContainer();
+
+    const handle = (id: string) => ({
+        id,
+        isVisible: () => NotificationStore.has(id),
+        close: () => NotificationStore.remove(id, false)
+    });
+    if (typeof notificationObj.id === "string" && NotificationStore.has(notificationObj.id)) return handle(notificationObj.id);
 
     const defaults: BdNotification = {
         id: BD_NOTIF_genId(),
@@ -2421,16 +1928,12 @@ function BD_NOTIF_show(notificationObj: Partial<BdNotification>): { id: string; 
     };
 
     const finalNotification: BdNotification = { ...defaults, ...notificationObj };
+    finalNotification.id ??= defaults.id;
     finalNotification.__kSelf = Symbol("kSelf");
     finalNotification.__createdAt = Date.now();
 
     NotificationStore.add(finalNotification);
-
-    return {
-        id: finalNotification.id,
-        isVisible: () => NotificationStore.has(finalNotification.id),
-        close: () => NotificationStore.remove(finalNotification.id)
-    };
+    return handle(finalNotification.id);
 }
 
 // ============================================================================
@@ -2438,17 +1941,30 @@ function BD_NOTIF_show(notificationObj: Partial<BdNotification>): { id: string; 
 // ============================================================================
 
 // ============================================================================
-// BdTooltip — BD-spec imperative tooltip class
+// BdTooltip - BD-spec imperative tooltip class
 // ============================================================================
 const BD_TOOLTIP_STYLES = `
-    .bd-layer { position: fixed; z-index: 999999; pointer-events: none; }
-    .bd-tt { opacity: 0; transform: translateY(-2px); transition: opacity .12s ease, transform .12s ease; max-width: 320px; background: #111; color: #fff; font-size: 12px; line-height: 16px; border-radius: 6px; padding: 6px 8px; box-shadow: 0 6px 16px rgba(0,0,0,.4); }
-    .bd-tt.primary  { background: #111; }
-    .bd-tt.info     { background: #2563eb; }
-    .bd-tt.success  { background: #16a34a; }
-    .bd-tt.warn     { background: #d97706; }
-    .bd-tt.danger   { background: #dc2626; }
+.bd-layer{position:fixed;z-index:999999;pointer-events:none}
+.bd-tooltip{position:relative;border-radius:5px;font-weight:500;font-size:14px;line-height:16px;max-width:190px;box-sizing:border-box;word-wrap:break-word;box-shadow:var(--elevation-high);color:var(--text-strong)}
+.bd-tooltip-content{padding:8px 12px;overflow:hidden}
+.bd-tooltip-pointer{pointer-events:none;width:0;height:0;border:5px solid transparent}
+.bd-tooltip-primary{background-color:var(--background-base-low);color:var(--text-default)}
+.bd-tooltip-primary .bd-tooltip-pointer{border-top-color:var(--background-base-low)}
+.bd-tooltip-info{background-color:#4a90e2}
+.bd-tooltip-info .bd-tooltip-pointer{border-top-color:#4a90e2}
+.bd-tooltip-success{background-color:#43b581}
+.bd-tooltip-success .bd-tooltip-pointer{border-top-color:#43b581}
+.bd-tooltip-danger{background-color:#f04747}
+.bd-tooltip-danger .bd-tooltip-pointer{border-top-color:#f04747}
+.bd-tooltip-warn{background-color:#ffa600}
+.bd-tooltip-warn .bd-tooltip-pointer{border-top-color:#ffa600}
+.bd-tooltip-top .bd-tooltip-pointer{position:absolute;top:100%;left:50%;margin-left:-5px}
+.bd-tooltip-bottom .bd-tooltip-pointer{position:absolute;bottom:100%;left:50%;margin-left:-5px;transform:rotate(180deg)}
+.bd-tooltip-right .bd-tooltip-pointer{position:absolute;right:100%;top:50%;margin-top:-5px;transform:rotate(90deg)}
+.bd-tooltip-left .bd-tooltip-pointer{position:absolute;left:100%;top:50%;margin-top:-5px;transform:rotate(270deg)}
 `;
+const BD_TOOLTIP_SIDES = ["top", "right", "bottom", "left"];
+const BD_TOOLTIP_TYPES = ["primary", "info", "success", "warn", "danger"];
 class BdTooltip {
     node: HTMLElement;
     label: string | HTMLElement;
@@ -2472,18 +1988,25 @@ class BdTooltip {
         this.disabled = disabled;
         this.active = false;
 
+        if (!BD_TOOLTIP_SIDES.includes(side)) throw new Error(`Tooltip - Side ${side} does not exist.`);
+        if (!BD_TOOLTIP_TYPES.includes(style)) throw new Error(`Tooltip - Style ${style} does not exist.`);
+        injectStyle("bd-tooltip-styles", BD_TOOLTIP_STYLES);
+
         this.element = document.createElement("div");
         this.element.className = "bd-layer";
 
         this.tooltipElement = document.createElement("div");
-        this.tooltipElement.className = `bd-tt ${style}`;
+        this.tooltipElement.className = `bd-tooltip bd-tooltip-${style}`;
+
+        const pointer = document.createElement("div");
+        pointer.className = "bd-tooltip-pointer";
 
         this.labelElement = document.createElement("div");
-        this.labelElement.className = "bd-tt-inner";
+        this.labelElement.className = "bd-tooltip-content";
         if (text instanceof HTMLElement) this.labelElement.append(text);
         else this.labelElement.textContent = text ?? "";
 
-        this.tooltipElement.append(this.labelElement);
+        this.tooltipElement.append(pointer, this.labelElement);
         this.element.append(this.tooltipElement);
 
         this.node.addEventListener("mouseenter", () => { if (!this.disabled) this.show(); });
@@ -2542,25 +2065,25 @@ class BdTooltip {
     }
 
     showAbove() {
-        this.tooltipElement.classList.add("bd-tt-top");
+        this.tooltipElement.classList.add("bd-tooltip-top");
         this.element.style.setProperty("top", `${this.node.getBoundingClientRect().top - this.element.offsetHeight - 10}px`);
         this.centerHorizontally();
     }
 
     showBelow() {
-        this.tooltipElement.classList.add("bd-tt-bottom");
+        this.tooltipElement.classList.add("bd-tooltip-bottom");
         this.element.style.setProperty("top", `${this.node.getBoundingClientRect().top + this.node.offsetHeight + 10}px`);
         this.centerHorizontally();
     }
 
     showLeft() {
-        this.tooltipElement.classList.add("bd-tt-left");
+        this.tooltipElement.classList.add("bd-tooltip-left");
         this.element.style.setProperty("left", `${this.node.getBoundingClientRect().left - this.element.offsetWidth - 10}px`);
         this.centerVertically();
     }
 
     showRight() {
-        this.tooltipElement.classList.add("bd-tt-right");
+        this.tooltipElement.classList.add("bd-tooltip-right");
         this.element.style.setProperty("left", `${this.node.getBoundingClientRect().left + this.node.offsetWidth + 10}px`);
         this.centerVertically();
     }
@@ -2578,31 +2101,26 @@ class BdTooltip {
 
 export const UIHolder = {
     alert(title: string, content: any) {
-        return this.showConfirmationModal(title, content, { cancelText: null });
+        showConfirmationModal(title, content, { cancelText: null });
     },
     helper() {
         compat_logger.error(new Error("Not implemented."));
     },
-    showToast(message: string, secondArg: any = 1) {
-        const mod = getGlobalApi().Webpack.getModule(x => x.createToast && x.showToast);
-        if (!mod) return;
-        let typeCode = 1;
-        if (typeof secondArg === "number") {
-            typeCode = [0, 1, 2, 3, 4, 5].includes(secondArg) ? secondArg : 1;
-        } else if (secondArg && typeof secondArg === "object") {
-            const t = String(secondArg.type || "").toLowerCase();
-            const map: Record<string, number> = {
-                "": 1, info: 1,
-                success: 0,
-                warn: 3, warning: 3,
-                error: 4, danger: 4
-            };
-            typeCode = map[t] ?? 1;
-        }
-        mod.showToast(mod.createToast(message || "Success!", typeCode));
+    showToast(content: string, options: number | BdToastOptions = {}) {
+        const legacyTypes: BdToastType[] = ["success", "info", "error", "warning", "error", "info"];
+        const { type = "", icon = true, timeout = 3000 } = typeof options === "number" ? { type: legacyTypes[options] } : options;
+        let toastIcon: typeof InfoIcon | undefined;
+        if (icon && (type === "info" || type === "warn" || type === "warning")) toastIcon = type === "info" ? InfoIcon : WarningIcon;
+        showToast({
+            text: content,
+            variant: type === "success" ? "success" : type === "error" || type === "danger" ? "critical" : "default",
+            duration: timeout,
+            icon: toastIcon,
+            iconColor: type === "info" ? "var(--text-feedback-info)" : "var(--text-feedback-warning)"
+        });
     },
-    showConfirmationModal(title: string, content: any, settings: any = {}) {
-        return BD_CM_open(title, content, settings);
+    showConfirmationModal(title: string, content: any, options: ConfirmationModalOptions = {}) {
+        return showConfirmationModal(title, content, options);
     },
     /**
  * Gives access to the Electron Dialog API.
@@ -2662,58 +2180,10 @@ export const UIHolder = {
         }
         return data;
     },
-    closeConfirmationModal(key: string) { BD_CM_close(key); },
-    closeAllConfirmationModals() { BD_CM_closeAll(); },
-    showNotice_(title, content, options: any = {}) {
-        const container = document.createElement("div");
-        container.className = "custom-notification-container";
-        const closeNotification = () => {
-            const customNotification = container.querySelector(".custom-notification");
-            if (customNotification) {
-                customNotification.classList.add("close");
-                setTimeout(() => {
-                    container.remove();
-                }, 1000);
-            }
-        };
-        const { timeout = 0, type = "default" } = options;
-        const buttons = [
-            { label: "Close", onClick: x => { x(); } },
-            ...options.buttons || []
-        ];
-        const buttonElements = buttons.map((button, index) => {
-            const onClickHandler = () => {
-                button.onClick(closeNotification);
-            };
-            return docCreateElement("button", { className: "confirm-button", onclick: onClickHandler }, [typeof button.label === "string" ? docCreateElement("span", { innerText: button.label }) : button.label]);
-        });
-        docCreateElement("button", { onclick: closeNotification, className: "button-with-svg" }, [
-            docCreateElement("svg", { className: "xxx" }, [
-                docCreateElement("path", undefined, undefined, {
-                    stroke: "white",
-                    strokeWidth: "2",
-                    fill: "none",
-                    d:
-                        "M18.4 4L12 10.4L5.6 4L4 5.6L10.4 12L4 18.4L5.6 20L12 13.6L18.4 20L20 18.4L13.6 12L20 5.6L18.4 4Z",
-                }),
-            ], { style: "width: 24px; height: 24px;" }),
-        ]);
-        const titleComponent = docCreateElement("span", { className: "notification-title" }, [typeof title === "string" ? docCreateElement("span", { innerText: title }) : title]);
-        const contentComponent = docCreateElement("div", { className: "content" }, [typeof content === "string" ? docCreateElement("span", { innerText: content }) : content]);
-        const customNotification = docCreateElement("div", { className: `custom-notification ${type}` }, [
-            docCreateElement("div", { className: "top-box" }, [titleComponent]),
-            contentComponent,
-            docCreateElement("div", { className: "bottom-box" }, buttonElements),
-        ]);
-        container.appendChild(customNotification);
-        document.body.appendChild(container);
-        if (timeout > 0) {
-            setTimeout(closeNotification, timeout);
-        }
-        return closeNotification;
-    },
-    showNotice(content, options) {
-        return this.showNotice_("Notice", content, options);
+    closeConfirmationModal(key: string) { closeConfirmationModal(key); },
+    closeAllConfirmationModals() { closeAllConfirmationModals(); },
+    showNotice(content: string | Node, options: NoticeOptions = {}) {
+        return showNotice(content, options);
     },
     /**
      * Shows a rich notification with progress bar, actions, and customizable appearance.
@@ -2725,6 +2195,7 @@ export const UIHolder = {
      * @param notification.type Type: "info" | "success" | "error" | "warning"
      * @param notification.duration Duration in ms (default 5000, 0 for no auto-close)
      * @param notification.icon Custom icon component
+     * @param notification.render Component rendered instead of the default notification body
      * @param notification.actions Array of action buttons
      * @param notification.onClose Callback when notification closes
      * @returns Control object with id, isVisible(), and close()
@@ -2743,131 +2214,27 @@ export const UIHolder = {
      * // Later: notif.close();
      */
     showNotification(notification: Partial<BdNotification>) {
-        // Use custom implementation for BD-specific features (duration, actions, close handle)
-        // Delegate simple notifications to Vencord's built-in system
-        if (needsCustomNotification(notification)) {
-            return BD_NOTIF_show(notification);
-        }
-
-        // Simple notification - use Vencord's API for better integration
-        // (focus awareness, native notifications, global settings)
-        const id = BD_NOTIF_genId();
-
-        try {
-            VencordShowNotification({
-                title: notification.title ?? "Notification",
-                body: typeof notification.content === "string" ? notification.content : "",
-                richBody: typeof notification.content === "string" ? undefined : notification.content as React.ReactNode,
-                color: bdTypeToVencordColor(notification.type),
-                onClick: notification.onClose, // BD doesn't have onClick, but onClose on click makes sense
-                onClose: notification.onClose,
-                permanent: false, // Will use global Vencord timeout
-            });
-        } catch (e) {
-            // Fallback to custom implementation if Vencord API fails
-            compat_logger.warn("[showNotification] Vencord API failed, using fallback:", e);
-            return BD_NOTIF_show(notification);
-        }
-
-        // Return a dummy handle since Vencord doesn't support close handles
-        // This maintains API compatibility even though close() is a no-op
-        return {
-            id,
-            isVisible: () => false, // Can't track Vencord notifications
-            close: () => { } // Vencord doesn't support programmatic close
-        };
+        return BD_NOTIF_show(notification);
     },
-    createTooltip(attachTo: HTMLElement, label: string, opts: any = {}) {
-        getGlobalApi().DOM.addStyle("bd-tooltip-styles", BD_TOOLTIP_STYLES);
+    createTooltip(attachTo: HTMLElement, label: string | HTMLElement, opts: any = {}) {
         return new BdTooltip(attachTo, label, opts);
     },
     showChangelogModal(options) {
         return _showChangelogModal(options);
     },
     async showInviteModal(inviteCode: string): Promise<void> {
-        const tester = /\.gg\/(.*)$/;
-        const m = tester.exec(inviteCode);
+        const m = /\.gg\/(.*)$/.exec(inviteCode);
         if (m) inviteCode = m[1];
-        try {
-            await VencordOpenInviteModal(inviteCode);
-        } catch (e) {
-            compat_logger.error("[UI.showInviteModal] Failed to open invite modal:", e);
+        const { invite } = await InviteActions.resolveInvite(inviteCode, "Desktop Modal");
+        if (!invite) {
+            compat_logger.warn("[UI.showInviteModal] Failed to resolve invite:", inviteCode);
+            return;
         }
+        FluxDispatcher.dispatch({ type: "INVITE_MODAL_OPEN", invite, code: inviteCode, context: "APP" });
     },
-    buildSettingItem(setting: any) {
-        if (!setting?.id || !setting?.type) {
-            throw new Error("Setting item missing id or type");
-        }
-        const { React, Components } = getGlobalApi();
-        const { Paragraph } = Components;
-        const component = _createSettingComponent(setting, null, () => { });
-        return React.createElement("div", { className: "bd-setting-item", style: { marginBottom: 8 } }, [
-            React.createElement(Paragraph, { size: "md", weight: "semibold" }, setting.name),
-            component
-        ]);
-    },
-    buildSettingsPanel(options: { settings: SettingsType[], onChange: CallableFunction; }) {
-        const settings: React.ReactNode[] = [];
-        const { React, Components } = getGlobalApi();
-        const { Paragraph } = Components;
-        const defaultCatId = "null";
-        const targetSettingsToSet = { enabled: true, [defaultCatId]: { enabled: true, } };
-        for (const current of options.settings) {
-            if (current.type === "category" && current.settings) {
-                targetSettingsToSet[current.id] = { enabled: true, };
-                for (const currentInCategory of current.settings) {
-                    Object.defineProperty(targetSettingsToSet[current.id], currentInCategory.id, {
-                        get() {
-                            if (typeof currentInCategory.value === "function")
-                                return currentInCategory.value();
-                            else
-                                return currentInCategory.value;
-                        },
-                        set(val) {
-                            options.onChange(current.id, currentInCategory.id, val);
-                        }
-                    });
-                }
-            }
-            else {
-                Object.defineProperty(targetSettingsToSet[defaultCatId], current.id, {
-                    get() {
-                        if (typeof current.value === "function")
-                            return current.value();
-                        else
-                            return current.value;
-                    },
-                    set(val) {
-                        options.onChange(null, current.id, val);
-                    }
-                });
-            }
-        }
-        const craftOptions = (now: SettingsType[], catName: string) => {
-            for (const current of now) {
-                if (current.type === "category") {
-                    settings.push(
-                        React.createElement("div", { style: { marginBottom: 8 } }, [
-                            React.createElement(Divider),
-                            React.createElement(Paragraph, { size: "lg", weight: "semibold" }, current.name)
-                        ])
-                    );
-                    craftOptions(current.settings!, current.id);
-                } else {
-                    const component = _createSettingComponent(current, catName, (cat, id, val) => options.onChange(cat, id, val));
-                    settings.push(
-                        React.createElement("div", { className: "bd-compat-setting", style: { marginBottom: 8 } }, [
-                            React.createElement(Paragraph, { size: "md", weight: "semibold" }, current.name),
-                            component
-                        ])
-                    );
-                }
-            }
-        };
-        craftOptions(options.settings, defaultCatId);
-        const result = React.createElement("div", {}, settings);
-        return result;
-    }
+    buildSettingItem,
+    buildSettingsPanel,
+    openFloatingWindow
 };
 export const DOMHolder = {
     get screenWidth() { return Math.max(document.documentElement.clientWidth, window.innerWidth || 0); },
@@ -2917,75 +2284,57 @@ export const DOMHolder = {
         observer.observe(document.body, { subtree: true, childList: true });
         return () => observer.disconnect();
     },
-    addStyle(id, css) {
-        id = id.replaceAll(/(?:^[^a-z]+)|(?:[^\w-]+)/gi, "-");
-        const style: HTMLElement =
-            document
-                .querySelector("bd-styles")
-                ?.querySelector(`#${id}`) ||
-            this.createElement("style", { id });
+    addStyle(id: string, css: string) {
+        if (!css) throw new Error("No css provided");
+        id = CSS.escape(id);
+        const style = document.getElementById(id) ?? this.createElement("style", { id });
         style.textContent = css;
         document.querySelector("bd-styles")?.append(style);
     },
-    removeStyle(id) {
-        id = id.replaceAll(/(?:^[^a-z]+)|(?:[^\w-]+)/gi, "-");
-        const exists = document
-            .querySelector("bd-styles")
-            ?.querySelector(`#${id}`);
-        if (exists) exists.remove();
+    removeStyle(id: string) {
+        if (!id) throw new Error("No id provided");
+        document.getElementById(CSS.escape(id))?.remove();
     },
-    createElement(tag, options: any = {}, ...children: (string | Node)[]) {
-        const { className, id, target } = options;
+    createElement<K extends keyof HTMLElementTagNameMap>(tag: K, options: Record<string, unknown> = {}, ...children: unknown[]): HTMLElementTagNameMap[K] {
         const element = document.createElement(tag);
-        if (className) element.className = className;
-        if (id) element.id = id;
-        if (children.length) element.append(...children);
-        if (target) document.querySelector(target).append(element);
+        Object.assign(element, options);
+        element.append(...children.flat(Infinity).filter((child): child is Node | string => child != null));
+        const { target } = options;
+        if (target) {
+            compat_logger.warn("The target option of DOM.createElement is deprecated and will be removed in a future version.");
+            (typeof target === "string" ? document.querySelector(target) : target instanceof Element ? target : null)?.append(element);
+        }
         return element;
     },
-    injectScript(targetName: string, url: string) {
-        targetName = targetName.replaceAll(/(?:^[^a-z]+)|(?:[^\w-]+)/gi, "-");
+    injectScript(id: string, url: string) {
+        id = CSS.escape(id);
         return new Promise((resolve, reject) => {
-            const theRemoteScript = document
-                .querySelector("bd-scripts")?.querySelector(`#${targetName}`) || this.createElement("script", { id: targetName });
-            theRemoteScript.src = url;
-            theRemoteScript.onload = resolve;
-            theRemoteScript.onerror = reject;
-            document.querySelector("bd-scripts")?.append(theRemoteScript);
+            const existing = document.getElementById(id);
+            const script = existing instanceof HTMLScriptElement ? existing : this.createElement("script", { id });
+            script.src = url;
+            script.onload = resolve;
+            script.onerror = reject;
+            document.querySelector("bd-scripts")?.append(script);
         });
     },
-    removeScript(targetName: string) {
-        targetName = targetName.replaceAll(/(?:^[^a-z]+)|(?:[^\w-]+)/gi, "-");
-        const theRemoteScript = document
-            .querySelector("bd-scripts")?.querySelector(`#${targetName}`);
-        if (theRemoteScript != null)
-            theRemoteScript.remove();
+    removeScript(id: string) {
+        document.getElementById(CSS.escape(id))?.remove();
     },
-    parseHTML(html: string, asFragment = false) {
+    parseHTML(html: string, fragment = false) {
         const template = document.createElement("template");
         template.innerHTML = html.trim();
-        if (asFragment) {
-            return template.content.cloneNode(true);
-        }
-        const { childNodes } = template.content;
-        return childNodes.length === 1 ? childNodes[0] : childNodes;
+        const node = template.content.cloneNode(true);
+        if (fragment) return node;
+        return node.childNodes.length > 1 ? node.childNodes : node.childNodes[0];
     },
-    injectTheme(id, css) {
-        id = id.replaceAll(/(?:^[^a-z]+)|(?:[^\w-]+)/gi, "-");
-        const style: HTMLElement =
-            document
-                .querySelector("bd-themes")
-                ?.querySelector(`#${id}`) ||
-            this.createElement("style", { id });
+    injectTheme(id: string, css: string) {
+        id = CSS.escape(id);
+        const style = document.getElementById(id) ?? this.createElement("style", { id });
         style.textContent = css;
         document.querySelector("bd-themes")?.append(style);
     },
-    removeTheme(id) {
-        id = id.replaceAll(/(?:^[^a-z]+)|(?:[^\w-]+)/gi, "-");
-        const exists = document
-            .querySelector("bd-themes")
-            ?.querySelector(`#${id}`);
-        if (exists) exists.remove();
+    removeTheme(id: string) {
+        document.getElementById(CSS.escape(id))?.remove();
     },
 };
 
@@ -2994,27 +2343,15 @@ class DOMWrapper {
     constructor(label) {
         this.#label = label;
     }
-    addStyle(id, css) {
-        if (arguments.length === 2) {
-            id = arguments[0];
-            css = arguments[1];
-        }
-        else {
-            css = id;
-            id = this.#label;
-        }
+    addStyle(id: string, css?: string) {
+        if (!css) return DOMHolder.addStyle(this.#label, id);
         return DOMHolder.addStyle(id, css);
     }
-    removeStyle(id) {
-        if (arguments.length === 1) {
-            id = arguments[0];
-        }
-        else {
-            id = this.#label;
-        }
-        return DOMHolder.removeStyle(id);
+    removeStyle(id?: string) {
+        return DOMHolder.removeStyle(id ?? this.#label);
     }
     get createElement() { return DOMHolder.createElement.bind(DOMHolder); }
+    get parseHTML() { return DOMHolder.parseHTML.bind(DOMHolder); }
     get screenWidth() { return DOMHolder.screenWidth; }
     get screenHeight() { return DOMHolder.screenHeight; }
     animate(update: (p: number) => void, duration: number, options?: { timing?: (t: number) => number; }) {
@@ -3059,13 +2396,19 @@ function _findInTreeWalk(tree: any, searchFilter: any, opts: { walkable?: string
 }
 
 class BdApiReImplementationInstance {
-    readonly #patcher: PatcherWrapper | typeof Patcher;
+    readonly #patcher: PatcherWrapper | typeof PatcherAPI;
     readonly #data: DataWrapper | typeof DataHolder;
     readonly #dom: DOMWrapper | typeof DOMHolder;
     readonly #hooks: HooksWrapper | typeof HooksHolder;
+    readonly #commands: CommandsWrapper | typeof CommandsHolder;
+    #logger: ReturnType<typeof addLogger> | typeof addLogger = addLogger;
     ContextMenu = {};
     labelsOfInstancedAPI: { [key: string]: BdApiReImplementationInstance; };
     constructor(label?: string) {
+        if (label && typeof label !== "string") {
+            compat_logger.error("Plugin name not a string, returning generic API!");
+            label = undefined;
+        }
         if (label) {
             if (getGlobalApi().labelsOfInstancedAPI[label]) {
                 // @ts-ignore
@@ -3078,12 +2421,16 @@ class BdApiReImplementationInstance {
                 this.#dom = undefined;
                 // @ts-ignore
                 this.#hooks = undefined;
+                // @ts-ignore
+                this.#commands = undefined;
                 return getGlobalApi().labelsOfInstancedAPI[label]; // NOSONAR: Intentional singleton pattern
             }
             this.#patcher = new PatcherWrapper(label);
             this.#data = new DataWrapper(label);
             this.#dom = new DOMWrapper(label);
             this.#hooks = new HooksWrapper(label);
+            this.#commands = new CommandsWrapper(label);
+            this.#logger = addLogger(label);
             // @ts-ignore
             this.labelsOfInstancedAPI = undefined;
             getGlobalApi().labelsOfInstancedAPI[label] = this;
@@ -3094,10 +2441,11 @@ class BdApiReImplementationInstance {
             });
         }
         else {
-            this.#patcher = Patcher;
+            this.#patcher = PatcherAPI;
             this.#data = DataHolder;
             this.#dom = DOMHolder;
             this.#hooks = HooksHolder;
+            this.#commands = CommandsHolder;
             this.labelsOfInstancedAPI = {};
             return getGlobalApi(); // NOSONAR: Intentional singleton pattern
         }
@@ -3111,183 +2459,35 @@ class BdApiReImplementationInstance {
     get Plugins() { return PluginsHolder; }
     get Tooltip() { return BdTooltip; }
     Components = {
-        get Tooltip() {
-            return getGlobalApi().Webpack.getModule(
-                x => x?.prototype?.renderTooltip,
-                { searchExports: true }
-            );
-        },
-        get Text() {
-            return VencordParagraph;
-        },
-        get Paragraph() {
-            return VencordParagraph;
-        },
-        get Button() {
-            return VencordButton;
-        },
+        Tooltip,
+        Text: BdText,
+        Paragraph: VencordParagraph,
+        Button: BdButton,
         get Spinner() {
             return components.Spinner;
         },
-        get TextInput() {
-            return Vencord.Webpack.Common.TextInput;
-        },
-        SwitchInput(props: { id: string, value: boolean, onChange: (v: boolean) => void; }) {
-            return getGlobalApi().UI.buildSettingsPanel({
-                settings: [{
-                    id: props.id,
-                    name: "",
-                    type: "switch",
-                    value: props.value,
-                }],
-                onChange(c, id, v: boolean) {
-                    props.onChange(v);
-                },
-            });
-        },
-        SettingGroup(props: { id: string, name: string, children: React.ReactNode | React.ReactNode[]; }) {
-            return Vencord.Webpack.Common.React.createElement("span", {}, [getGlobalApi().UI.buildSettingsPanel({
-                settings: [{
-                    id: props.id,
-                    name: props.name,
-                    type: "category",
-                    settings: [],
-                }],
-                onChange(c, id, v) { },
-            })], props.children);
-        },
-        SettingItem(props: { id: string, name: string, note: string, children: React.ReactNode | React.ReactNode[]; }) {
-            const opt = OptionType.COMPONENT;
-            const fakeElement = VenComponents[opt];
-            return Vencord.Webpack.Common.React.createElement("div", undefined, [Vencord.Webpack.Common.React.createElement(fakeElement, {
-                id: `bd_compat-item-${props.id}`,
-                key: `bd_compat-item-${props.id}`,
-                option: {
-                    type: opt,
-                    component: () => createTextForm(props.name, props.note, false),
-                },
-                onChange(newValue) { },
-                pluginSettings: { enabled: true, },
-            }), props.children]);
-        },
-        RadioInput(props: { name: string, onChange: (new_curr: string) => void, value: any, options: { name: string, value: any; }[]; }) {
-            return getGlobalApi().UI.buildSettingsPanel({
-                settings: [{
-                    id: `bd_compat-radio-${props.name}`,
-                    name: props.name,
-                    type: "dropdown",
-                    value: props.value,
-                    options: props.options.map(x => ({ label: x.name, value: x.value }))
-                }],
-                onChange(c, id, v: string) {
-                    props.onChange(v);
-                },
-            });
-        },
-        DropdownInput(props: { value?: any, options: { id?: string, value: any, label: string; }[], style?: "transparent" | "default", onChange?: (newValue: any) => void, disabled?: boolean; }) {
-            const { React } = getGlobalApi();
-            const { SearchableSelect } = Vencord.Webpack.Common;
-            return React.createElement(SearchableSelect, {
-                options: props.options,
-                value: props.value ?? props.options[0]?.value,
-                onChange: (v: any) => props.onChange?.(v),
-                isDisabled: props.disabled,
-                closeOnSelect: true,
-            });
-        },
-        KeybindInput(props: { value: string[], onChange?: (newValue: string[]) => void, max?: number, clearable?: boolean, disabled?: boolean; }) {
-            const { React } = getGlobalApi();
-            return React.createElement(KeybindSettingComponent, {
-                id: `bd_compat-keybind-${Date.now()}`,
-                onChange: (v: string[]) => props.onChange?.(v),
-                option: {
-                    value: props.value,
-                    max: props.max ?? 4,
-                    clearable: props.clearable ?? false,
-                    disabled: props.disabled,
-                },
-            });
-        },
-        get ErrorBoundary() {
-            const VencordEB = Vencord.Components.ErrorBoundary;
-            return (props: any) => {
-                const { id, name, hideError, onError, ...rest } = props;
-                const { React } = getGlobalApi();
-                return React.createElement(VencordEB, {
-                    ...rest,
-                    noop: hideError,
-                    message: name || id,
-                    onError: onError ? ({ error }) => onError(error) : undefined
-                });
-            };
-        },
-        get Flex() {
-            const { React } = getGlobalApi();
-            const Direction = Object.freeze({
-                VERTICAL: "bd-flex-vertical",
-                HORIZONTAL: "bd-flex-horizontal",
-                HORIZONTAL_REVERSE: "bd-flex-reverse"
-            });
-            const Justify = Object.freeze({
-                START: "bd-flex-justify-start",
-                END: "bd-flex-justify-end",
-                CENTER: "bd-flex-justify-center",
-                BETWEEN: "bd-flex-justify-between",
-                AROUND: "bd-flex-justify-around"
-            });
-            const Align = Object.freeze({
-                START: "bd-flex-align-start",
-                END: "bd-flex-align-end",
-                CENTER: "bd-flex-align-center",
-                STRETCH: "bd-flex-align-stretch",
-                BASELINE: "bd-flex-align-baseline"
-            });
-            const Wrap = Object.freeze({
-                NO_WRAP: "bd-flex-no-wrap",
-                WRAP: "bd-flex-wrap",
-                WRAP_REVERSE: "bd-flex-wrap-reverse"
-            });
-            const joinClasses = (...classes) => classes.filter(Boolean).join(" ");
-            function FlexChild(props) {
-                const { className, ...rest } = props;
-                return React.createElement(Flex, {
-                    ...rest,
-                    className: joinClasses(className, "bd-flex-child")
-                });
-            }
-            function Flex({
-                children,
-                className,
-                style,
-                shrink = 1,
-                grow = 1,
-                basis = "auto",
-                direction = Direction.HORIZONTAL,
-                align = Align.STRETCH,
-                justify = Justify.START,
-                wrap = Wrap.NO_WRAP,
-                ...props
-            }) {
-                return React.createElement("div", {
-                    ...props,
-                    className: joinClasses("bd-flex", direction, justify, align, wrap, className),
-                    style: { flexShrink: shrink, flexGrow: grow, flexBasis: basis, ...style }
-                }, children);
-            }
-            Flex.Child = FlexChild;
-            Flex.Direction = Direction;
-            Flex.Align = Align;
-            Flex.Justify = Justify;
-            Flex.Wrap = Wrap;
-            return Flex;
-        },
+        TextInput: BdTextInput,
+        SwitchInput,
+        NumberInput,
+        SliderInput,
+        ColorInput,
+        DropdownInput,
+        RadioInput,
+        KeybindInput,
+        SearchInput,
+        Checkbox: BdCheckbox,
+        SettingItem,
+        SettingGroup,
+        ErrorBoundary: BdErrorBoundary,
+        Flex: BdFlex,
+        Modal: BdModal,
     };
     get Themes() { return ThemesHolder; }
     get React() {
         return Vencord.Webpack.Common.React;
     }
     get Commands() {
-        return CommandsHolder;
+        return this.#commands;
     }
     get Webpack() {
         return WebpackHolder;
@@ -3298,9 +2498,12 @@ class BdApiReImplementationInstance {
     // NOSONAR: Stub methods for BD API compatibility - not implemented
     enableSetting(_collection, _category, _id) { /* Not implemented */ }
     disableSetting(_collection, _category, _id) { /* Not implemented */ }
+    get version() { return "1.14.5"; }
     get ReactDOM() {
-        if (_ReactDOM_With_createRoot.createRoot === undefined)
-            Object.assign(_ReactDOM_With_createRoot, { ...Vencord.Webpack.Common.ReactDOM, createRoot: Vencord.Webpack.Common.createRoot });
+        if (_ReactDOM_With_createRoot.createRoot === undefined) {
+            const client = Vencord.Webpack.find(Vencord.Webpack.filters.byProps("hydrateRoot"), { isIndirect: true });
+            Object.assign(_ReactDOM_With_createRoot, Vencord.Webpack.Common.ReactDOM, client, { createRoot: Vencord.Webpack.Common.createRoot });
+        }
         return _ReactDOM_With_createRoot;
     }
     #reactUtils: any = null;
@@ -3346,13 +2549,14 @@ class BdApiReImplementationInstance {
              * Finds the owner instance of a DOM element.
              */
             getOwnerInstance(
-                el: HTMLElement,
+                el: HTMLElement | undefined,
                 opt: {
                     include?: string[];
                     exclude?: string[];
                     filter?: (inst: any) => boolean;
                 } = {}
             ) {
+                if (!el) return null;
                 const { include } = opt;
                 const exclude = opt.exclude ?? (opt.include ? undefined : ["Popout", "Tooltip", "Scroller", "BackgroundFlash"]);
                 const filter = opt.filter ?? ((_: any) => true);
@@ -3365,7 +2569,7 @@ class BdApiReImplementationInstance {
                     if (!instance || instance instanceof HTMLElement) continue;
                     const type = fiberNode?.type;
                     const name = type?.displayName || type?.name;
-                    const passesNameFilter = !targetList || (name && (isInclusive === targetList.includes(name)));
+                    const passesNameFilter = name && (!targetList || isInclusive === targetList.includes(name));
                     if (passesNameFilter && filter(instance)) {
                         return instance;
                     }
@@ -3575,37 +2779,15 @@ class BdApiReImplementationInstance {
             return _findInTreeWalk(tree, searchFilter, options);
         },
         getNestedValue(obj: any, path: string) {
-            const properties = path.split(".");
-            let current = obj;
-            for (const prop of properties) {
-                if (current == null) return undefined;
-                current = current[prop];
-            }
-            return current;
+            if (!path) return obj;
+            return path.split(".").reduce((acc, key) => acc && acc[key], obj);
         },
-        semverCompare(a: string, b: string): -1 | 0 | 1 { /* Improved weak legacy semverCompare imp. Was TO-DO. */
-            const parse = (v: string) => {
-                v = v.replace(/^v/, "");
-                const [core, preRelease] = v.split("-", 2);
-                const nums = core.split(".").map(p => {
-                    const n = Number.parseInt(p, 10);
-                    return Number.isSafeInteger(n) && n >= 0 ? n : 0;
-                });
-                return { nums, preRelease: preRelease || null };
-            };
-            const aParsed = parse(a);
-            const bParsed = parse(b);
-            const maxLen = Math.max(aParsed.nums.length, bParsed.nums.length);
-            for (let i = 0; i < maxLen; i++) {
-                const aNum = aParsed.nums[i] ?? 0;
-                const bNum = bParsed.nums[i] ?? 0;
-                if (aNum < bNum) return 1;
-                if (aNum > bNum) return -1;
-            }
-            if (aParsed.preRelease && !bParsed.preRelease) return 1;
-            if (!aParsed.preRelease && bParsed.preRelease) return -1;
-            return 0;
-        },
+        semverCompare,
+        mapObject: BdWebpack.mapObject,
+        loadEntry: BdWebpack.loadEntry,
+        cache: Object.freeze(Object.assign(<T,>(factory: () => T) => BdWebpack.cache(factory), {
+            proxy: <T extends object>(factory: () => T, typeofIsObject?: boolean, CALL_LIMIT?: number) => BdWebpack.cache.proxy(factory, typeofIsObject, CALL_LIMIT)
+        })),
         async forceLoad(id: string | number): Promise<any[]> {
             if (wreq?.m[id] == null) return [];
             const text = String(wreq.m[id]);
@@ -3618,11 +2800,7 @@ class BdApiReImplementationInstance {
                 const numEntry = Number(entryPointId);
                 const entryPoint: any = Number.isNaN(numEntry) ? entryPointId : numEntry;
                 if (rawChunkIds) {
-                    const chunkIds = Array.from(rawChunkIds.matchAll(new RegExp(ChunkIdsRegex.source, "g"))).map(m => {
-                        const n = Number(m[1]);
-                        return Number.isNaN(n) ? m[1] : n;
-                    });
-                    await Promise.all(chunkIds.map(cid => wreq.e(cid as any)));
+                    await Promise.all(parseChunkIds(rawChunkIds).map(cid => wreq.e(cid)));
                 }
                 if (wreq.m[entryPoint] != null) {
                     loadedModules.push(wreq(entryPoint));
@@ -3630,7 +2808,7 @@ class BdApiReImplementationInstance {
             }
             return loadedModules;
         },
-        extend: ObjectMerger.perform.bind(ObjectMerger),
+        extend,
         debounce: lodash.debounce,
         /**
          * A minimal Flux-compatible store class for creating custom stores.
@@ -3652,9 +2830,7 @@ class BdApiReImplementationInstance {
         return UIHolder;
     }
     get Net() {
-        return {
-            fetch: (url: string, options) => { return fetchWithCorsProxyFallback(url, Settings.plugins[PLUGIN_NAME].corsProxyUrl, options); },
-        };
+        return BdNet;
     }
     alert(title, content) {
         UIHolder.showConfirmationModal(title, content, { cancelText: null });
@@ -3678,7 +2854,7 @@ class BdApiReImplementationInstance {
         return this.#dom;
     }
     get Logger() {
-        return addLogger;
+        return this.#logger;
     }
     get linkJS() {
         return DOMHolder.injectScript.bind(DOMHolder);
@@ -3687,7 +2863,7 @@ class BdApiReImplementationInstance {
         return DOMHolder.removeScript.bind(DOMHolder);
     }
 }
-const api_gettersToSet = ["Commands", "Components", "ContextMenu", "DOM", "Data", "Hooks", "Patcher", "Plugins", "React", "ReactDOM", "ReactUtils", "UI", "Net", "Utils", "Webpack", "labelsOfInstancedAPI", "alert", "disableSetting", "enableSetting", "findModule", "findModuleByProps", "findAllModules", "getData", "isSettingEnabled", "loadData", "monkeyPatch", "saveData", "setData", "showConfirmationModal", "showNotice", "showToast", "suppressErrors", "injectCSS", "Logger", "linkJS", "unlinkJS", "clearCSS", "Themes"];
+const api_gettersToSet = ["Commands", "Components", "ContextMenu", "DOM", "Data", "Hooks", "Patcher", "Plugins", "React", "ReactDOM", "ReactUtils", "UI", "Net", "Utils", "Webpack", "labelsOfInstancedAPI", "alert", "disableSetting", "enableSetting", "findModule", "findModuleByProps", "findAllModules", "getData", "isSettingEnabled", "loadData", "monkeyPatch", "saveData", "setData", "showConfirmationModal", "showNotice", "showToast", "suppressErrors", "injectCSS", "Logger", "linkJS", "unlinkJS", "clearCSS", "Themes", "version"];
 const api_settersToSet = new Set(["ContextMenu"]);
 function assignToGlobal() {
     const letsHopeThisObjectWillBeTheOnlyGlobalBdApiInstance = new BdApiReImplementationInstance();

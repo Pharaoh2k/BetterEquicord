@@ -26,6 +26,7 @@
      - closeAllChangelogModals()
    Matches BD docs: title/subtitle/blurb/banner/video/poster/footer/changes (added|fixed|improved|progress). */
 import { getGlobalApi } from "../fakeBdApi"; // get React + Webpack at runtime
+import { injectStyle, onCleanup, parseMarkdown } from "./common";
 type ChangeType = "fixed" | "added" | "progress" | "improved";
 export interface ChangeSection {
     title: string;
@@ -46,7 +47,6 @@ export interface ChangelogProps {
 }
 const STYLE_ID = "bd-changelog-runtime-styles";
 function ensureStyles() {
-    const { DOM } = getGlobalApi();
     const css = `
 .bd-cl-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:999998;opacity:0;animation:bd-cl-fade-in .12s ease forwards}
 @keyframes bd-cl-fade-in{to{opacity:1}}
@@ -75,21 +75,7 @@ function ensureStyles() {
 .bd-cl-md code{background:rgba(0,0,0,.35);border-radius:4px;padding:0 4px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.95em}
 .bd-cl-md a{color:#6aa2ff;text-decoration:none}.bd-cl-md a:hover{text-decoration:underline}
   `;
-    DOM.addStyle(STYLE_ID, css);
-}
-function escapeHtml(s: string) {
-    return s.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
-}
-function mdInline(s: string) {
-    s = s.replaceAll(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, "<a href=\"$2\" target=\"_blank\" rel=\"noopener noreferrer\">$1</a>");
-    s = s.replaceAll(/`([^`]+)`/g, "<code>$1</code>");
-    s = s.replaceAll(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-    s = s.replaceAll(/\*([^*\n]+)\*/g, "<em>$1</em>");
-    return s;
-}
-function markdownToHtml(s?: string) {
-    if (!s) return "";
-    return mdInline(escapeHtml(s));
+    injectStyle(STYLE_ID, css);
 }
 function isYouTube(url: string) { return /(?:youtube\.com|youtu\.be)/i.test(url); }
 function toYouTubeEmbed(url: string) {
@@ -109,6 +95,7 @@ const TYPE_META = {
 const registry = new Map<string, { host: HTMLElement; root: any; onKey: (e: KeyboardEvent) => void; }>();
 export function showChangelogModal(options: ChangelogProps): string {
     ensureStyles();
+    onCleanup(closeAllChangelogModals);
     const { React } = getGlobalApi();
     // Get React 18 client root API from Discord's bundle
     const ReactDOMClient = getGlobalApi().ReactDOM as any;
@@ -117,7 +104,7 @@ export function showChangelogModal(options: ChangelogProps): string {
     host.className = "bd-cl-host";
     document.body.appendChild(host);
     const onRequestClose = () => closeChangelogModal(key);
-    const HTML = ({ html }: { html: string; }) => React.createElement("span", { className: "bd-cl-md", dangerouslySetInnerHTML: { __html: html } });
+    const Markdown = ({ text }: { text: string; }) => React.createElement("span", { className: "bd-cl-md" }, parseMarkdown(text));
     const Section = ({ section }: { section: ChangeSection; }) => {
         const meta = (TYPE_META as any)[section.type] || TYPE_META.added;
         return React.createElement("section", { className: `bd-cl-section ${meta.className}`, "aria-label": `${meta.label} Section` },
@@ -128,9 +115,9 @@ export function showChangelogModal(options: ChangelogProps): string {
                 ),
                 React.createElement("span", null, section.title)
             ),
-            section.blurb && React.createElement("div", { className: "bd-cl-section-blurb" }, React.createElement(HTML, { html: markdownToHtml(section.blurb) })),
+            section.blurb && React.createElement("div", { className: "bd-cl-section-blurb" }, React.createElement(Markdown, { text: section.blurb })),
             Array.isArray(section.items) && section.items.length
-                ? React.createElement("ul", { className: "bd-cl-items" }, section.items.map(it => React.createElement("li", { key: it }, React.createElement(HTML, { html: markdownToHtml(it) }))))
+                ? React.createElement("ul", { className: "bd-cl-items" }, section.items.map(it => React.createElement("li", { key: it }, React.createElement(Markdown, { text: it }))))
                 : null
         );
     };
@@ -169,7 +156,7 @@ export function showChangelogModal(options: ChangelogProps): string {
                         subtitle ? React.createElement("div", { className: "bd-cl-subtitle" }, subtitle) : null
                     ),
                     React.createElement("div", { className: "bd-cl-body" },
-                        blurb ? React.createElement("div", { className: "bd-cl-blurb" }, React.createElement(HTML, { html: markdownToHtml(blurb) })) : null,
+                        blurb ? React.createElement("div", { className: "bd-cl-blurb" }, React.createElement(Markdown, { text: blurb })) : null,
                         Array.isArray(changes) ? changes.map(s => React.createElement(Section, { key: s.title, section: s })) : null
                     ),
                     React.createElement("footer", { className: "bd-cl-footer" },
@@ -193,7 +180,7 @@ export function showChangelogModal(options: ChangelogProps): string {
     } else if (ReactDOMClient && typeof ReactDOMClient.render === "function") {
         ReactDOMClient.render(modalTree, host); // legacy fallback
     } else {
-        // Couldn’t find a root API — show a toast and bail gracefully
+        // Couldn’t find a root API - show a toast and bail gracefully
         try { getGlobalApi().UI.showToast("Changelog: ReactDOM client API not found", { type: "error", forceShow: true }); } catch { }
         host.remove();
         return key;

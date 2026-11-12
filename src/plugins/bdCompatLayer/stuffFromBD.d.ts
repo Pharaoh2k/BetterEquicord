@@ -21,10 +21,10 @@
 */
 
 export declare function monkeyPatch(what: any, methodName: any, options: any);
-export declare function getModule(filter: any, options?: any);
+export declare function polyfillClassNameModule(exports: unknown): void;
 export declare const ReactUtils_filler: {
     setup: (DiscordModules: any) => void;
-    wrapElement: (element: HTMLElement) => void;
+    wrapElement: (element: Element | Element[]) => unknown;
     readonly rootInstance: any;
 };
 export declare class Patcher {

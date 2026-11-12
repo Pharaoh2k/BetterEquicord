@@ -29,8 +29,8 @@
  */
 
 import { getGlobalApi } from "../fakeBdApi";
+import { injectStyle } from "../ui/common";
 
-let stylesInjected = false;
 const SLIDER_CSS = `
 .bd-slider-wrap{position:relative;height:40px;margin:10px 0}
 .bd-slider-wrap.bd-has-markers{height:55px;margin-bottom:15px}
@@ -60,29 +60,14 @@ export interface SliderProps {
 
 export function SliderSettingComponent(props: SliderProps) {
     const { React } = getGlobalApi();
-    const [value, setValue] = React.useState(props.value);
-    const { min, max, step = 1, units = "", markers = [], disabled = false } = props;
-
-    React.useEffect(() => {
-        if (!stylesInjected) {
-            getGlobalApi().DOM.addStyle("bd-slider-styles", SLIDER_CSS);
-            stylesInjected = true;
-        }
-    }, []);
+    const { value, min, max, step = 1, units = "", markers = [], disabled = false } = props;
+    injectStyle("bd-slider-styles", SLIDER_CSS);
 
     const percent = (val: number) => ((val - min) * 100) / (max - min);
     const format = (v: number) => Math.round(v * 100) / 100;
 
-    const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-        const v = Number.parseFloat(e.target.value);
-        setValue(v);
-        props.onChange(v);
-    };
-
-    const jumpTo = (v: number) => {
-        setValue(v);
-        props.onChange(v);
-    };
+    const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => props.onChange(e.target.valueAsNumber);
+    const jumpTo = (v: number) => props.onChange(v);
 
     const hasMarkers = Array.isArray(markers) && markers.length > 0;
 

@@ -24,7 +24,7 @@ import { Link } from "@components/Link";
 import { Paragraph } from "@components/Paragraph";
 import { Logger } from "@utils/Logger";
 import { PluginNative } from "@utils/types";
-import { lodash, React } from "@webpack/common";
+import { React } from "@webpack/common";
 import * as fflate from "fflate";
 
 import { getGlobalApi } from "./fakeBdApi";
@@ -50,37 +50,31 @@ export function evalInScope(js: string, contextAsScope: any) {
     return new Function(["contextAsScope", "js"], "return (function() { with(this) { return eval(js); } }).call(contextAsScope)")(contextAsScope, js);
 }
 
+const logNameStyle = "color: #3a71c1; font-weight: 700;";
+const logAs = (type: "log" | "info" | "warn" | "error" | "debug", name: string, messages: unknown[]) =>
+    console[type](`%c[${name}]%c`, logNameStyle, "", ...messages);
+const stacktraceAs = (name: string, message: unknown, errors: unknown[]) =>
+    console.error(`%c[${name}]%c ${message}\n\n%c`, logNameStyle, "color: red; font-weight: 700;", "color: red;", ...errors);
+
 export function addLogger(pluginName: string = "BD Plugin") {
-    const prefix = `[${pluginName}]`;
-
-    const log_ = (type: "log" | "warn" | "error" | "debug", ...stuff: any[]) => {
-        console[type](prefix, ...stuff);
-    };
-
     return {
-        warn: (...args: any[]) => log_("warn", ...args),
-        info: (...args: any[]) => log_("log", ...args),
-        err: (...args: any[]) => log_("error", ...args),
-        error: (...args: any[]) => log_("error", ...args),
-        log: (...args: any[]) => log_("log", ...args),
-        debug: (...args: any[]) => log_("debug", ...args),
-        stacktrace: (label: string, ...args: any[]) => {
-            console.error(prefix, label, ...args);
-            if (args[0]?.stack) console.error(args[0].stack);
-        }
+        warn: (...messages: unknown[]) => logAs("warn", pluginName, messages),
+        info: (...messages: unknown[]) => logAs("info", pluginName, messages),
+        err: (...messages: unknown[]) => logAs("error", pluginName, messages),
+        error: (...messages: unknown[]) => logAs("error", pluginName, messages),
+        log: (...messages: unknown[]) => logAs("log", pluginName, messages),
+        debug: (...messages: unknown[]) => logAs("debug", pluginName, messages),
+        stacktrace: (message: unknown, ...errors: unknown[]) => stacktraceAs(pluginName, message, errors)
     };
 }
 
-addLogger.log = (name: string, ...args: any[]) => console.log(`[${name}]`, ...args);
-addLogger.info = (name: string, ...args: any[]) => console.info(`[${name}]`, ...args);
-addLogger.warn = (name: string, ...args: any[]) => console.warn(`[${name}]`, ...args);
-addLogger.error = (name: string, ...args: any[]) => console.error(`[${name}]`, ...args);
-addLogger.err = (name: string, ...args: any[]) => console.error(`[${name}]`, ...args);
-addLogger.debug = (name: string, ...args: any[]) => console.debug(`[${name}]`, ...args);
-addLogger.stacktrace = (name: string, label: string, error: any) => {
-    console.error(`[${name}]`, label, error);
-    if (error?.stack) console.error(error.stack);
-};
+addLogger.log = (name: string, ...messages: unknown[]) => logAs("log", name, messages);
+addLogger.info = (name: string, ...messages: unknown[]) => logAs("info", name, messages);
+addLogger.warn = (name: string, ...messages: unknown[]) => logAs("warn", name, messages);
+addLogger.error = (name: string, ...messages: unknown[]) => logAs("error", name, messages);
+addLogger.err = (name: string, ...messages: unknown[]) => logAs("error", name, messages);
+addLogger.debug = (name: string, ...messages: unknown[]) => logAs("debug", name, messages);
+addLogger.stacktrace = (name: string, message: unknown, error: unknown) => stacktraceAs(name, message, [error]);
 
 export function simpleGET(url: string, headers?: any) {
     const httpRequest = new XMLHttpRequest();
@@ -270,26 +264,6 @@ export async function reloadPluginsSelectively(changedFiles: string[]) {
             compat_logger.error("Failed to reload plugin", filename, e);
         }
     }
-}
-
-export function docCreateElement(tag: string, props: Record<string, any> = {}, childNodes: Node[] = [], attrs: Record<string, string> = {}) {
-    const element = document.createElement(tag);
-
-    for (const [key, value] of Object.entries(props)) {
-        element[key] = value;
-    }
-
-    for (const node of childNodes) {
-        if (node instanceof Node) {
-            element.appendChild(node);
-        }
-    }
-
-    for (const [key, value] of Object.entries<string>(attrs)) {
-        element.setAttribute(key, value);
-    }
-
-    return element;
 }
 
 export const FSUtils = {
@@ -589,108 +563,65 @@ export function aquireNative() {
         .find(m => m.bdCompatLayerUniqueId) as PluginNative<typeof import("./native")>;
 }
 
-export const ObjectMerger = {
-    customizer(objValue, srcValue, key, object, source) {
-        if (srcValue === object) return objValue;
-        if (Array.isArray(srcValue)) {
-            return lodash.cloneDeep(srcValue);
+const cloneArray = (array: unknown[]): unknown[] => array.map(element =>
+    typeof element !== "object" || element === null ? element : Array.isArray(element) ? cloneArray(element) : extend({}, element));
+
+export function extend(target: Record<string, unknown>, ...extenders: unknown[]) {
+    if (extenders.length < 1) throw new Error("Needs at least 1 extenders");
+    for (const ext of extenders) {
+        if (typeof ext !== "object" || ext === null || Array.isArray(ext)) continue;
+        for (const key in ext) {
+            const source = target[key];
+            const value = ext[key];
+            if (value === target) continue;
+            if (typeof value !== "object" || value === null) target[key] = value;
+            else if (Array.isArray(value)) target[key] = cloneArray(value);
+            else if (typeof source !== "object" || source === null || Array.isArray(source)) target[key] = extend({}, value);
+            else target[key] = extend(source as Record<string, unknown>, value);
         }
-        return undefined;
-    },
-
-    skip(obj: null | object | unknown[]) {
-        if (typeof (obj) !== "object") return true;
-        if (obj === null) return true;
-        if (Array.isArray(obj)) return true;
-        return false;
-    },
-
-    perform(t: {}, ...exts: object[]) {
-        return exts.reduce((result, extender) => {
-            if (this.skip(extender)) return result;
-            return lodash.mergeWith(result, extender, this.customizer);
-        }, t);
     }
-};
-
-//  Discord keybind registry helpers
-
-let __keybindsResolved = false;
-let __KeybindsModule: any;
-let __KeybindStore: any;
-
-export function resolveKeybinds() {
-    if (__keybindsResolved) return { KeybindsModule: __KeybindsModule, KeybindStore: __KeybindStore };
-    try {
-        const W = getGlobalApi().Webpack;
-        __KeybindsModule = W.getModule(m => m?.addKeybind);
-        __KeybindStore = W.getModule(m => m?.getKeybindForAction);
-    } catch {
-        __KeybindsModule = undefined;
-        __KeybindStore = undefined;
-    }
-    __keybindsResolved = true;
-    return { KeybindsModule: __KeybindsModule, KeybindStore: __KeybindStore };
+    return target;
 }
 
-/**
- * Registers or updates a Discord keybind entry for display/persistence.
- * (Execution handled by plugins' keydown listener.)
- */
-export function registerOrUpdateKeybind(id: string, shortcutTokensLower: string[]) {
-    const { KeybindsModule, KeybindStore } = resolveKeybinds();
-    if (!KeybindsModule) return;
+const semverRegex = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$/;
+const numericRegex = /^\d+$/;
 
-    if (!shortcutTokensLower || shortcutTokensLower.length === 0) {
-        // Check if keybind exists before trying to delete
-        try {
-            const exists = KeybindStore?.getState?.()?.[id] ||
-                KeybindStore?.getKeybindForAction?.(id) ||
-                KeybindStore?.getKeybind?.(id);
-            if (exists) {
-                KeybindsModule.deleteKeybind(id);
-            }
-        } catch { }
-        return;
+function compareIdentifiers(a: string | number, b: string | number) {
+    const aNumeric = numericRegex.test(String(a));
+    const bNumeric = numericRegex.test(String(b));
+    if (aNumeric && bNumeric) {
+        a = +a;
+        b = +b;
     }
+    if (a === b) return 0;
+    if (aNumeric && !bNumeric) return -1;
+    if (bNumeric && !aNumeric) return 1;
+    return a < b ? -1 : 1;
+}
 
-    const payload = {
-        id,
-        enabled: true,
-        action: "UNASSIGNED",
-        shortcut: shortcutTokensLower, // lowercase tokens per Discord
-        managed: false
-    };
-
-    try {
-        const exists = !!(KeybindStore?.getState?.()?.[id]);
-        if (exists && typeof KeybindsModule.setKeybind === "function") {
-            KeybindsModule.setKeybind(payload);
-        } else {
-            KeybindsModule.addKeybind(payload);
-        }
-    } catch {
-        try { KeybindsModule.addKeybind(payload); } catch { }
+function comparePrerelease(a: string, b: string) {
+    if (a.length && !b.length) return -1;
+    if (!a.length && b.length) return 1;
+    if (!a.length) return 0;
+    const tokenize = (pre: string) => pre.split(".").map(id => numericRegex.test(id) && +id < Number.MAX_SAFE_INTEGER ? +id : id);
+    const aTokens = tokenize(a);
+    const bTokens = tokenize(b);
+    for (let i = 0; ; i++) {
+        const x = aTokens[i];
+        const y = bTokens[i];
+        if (x === undefined && y === undefined) return 0;
+        if (y === undefined) return 1;
+        if (x === undefined) return -1;
+        if (x !== y) return compareIdentifiers(x, y);
     }
 }
 
-export function deleteKeybind(id: string) {
-    const { KeybindsModule, KeybindStore } = resolveKeybinds();
-    if (!KeybindsModule) return;
-
-    // Check if the keybind actually exists in Discord's store before trying to delete it
-    try {
-        // Try to get the keybind first to verify it exists
-        const exists = KeybindStore?.getState?.()?.[id] ||
-            KeybindStore?.getKeybindForAction?.(id) ||
-            KeybindStore?.getKeybind?.(id);
-
-        // Only attempt deletion if the keybind exists in Discord's store
-        if (exists) {
-            KeybindsModule.deleteKeybind(id);
-        }
-        // If it doesn't exist, silently skip (it's probably a BD-only keybind)
-    } catch {
-        // Silently fail if there's any error
-    }
+export function semverCompare(currentVersion: unknown, remoteVersion: unknown) {
+    const current = semverRegex.exec(String(currentVersion));
+    const remote = semverRegex.exec(String(remoteVersion));
+    if (!current || !remote) return 0;
+    return compareIdentifiers(remote[1], current[1])
+        || compareIdentifiers(remote[2], current[2])
+        || compareIdentifiers(remote[3], current[3])
+        || comparePrerelease(remote[4] ?? "", current[4] ?? "");
 }

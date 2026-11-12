@@ -24,7 +24,8 @@ import ErrorBoundary from "@components/ErrorBoundary";
 import { Paragraph as VencordParagraph } from "@components/Paragraph";
 import { ModalContent, ModalFooter, ModalHeader, ModalRoot, ModalSize, openModal } from "@utils/modal";
 import { OptionType, Plugin } from "@utils/types";
-import { React } from "@webpack/common";
+import { wreq } from "@webpack";
+import { React, showToast } from "@webpack/common";
 import { DetailedReactHTMLElement } from "react";
 
 import { PluginMeta } from "~plugins";
@@ -32,29 +33,31 @@ import { PluginMeta } from "~plugins";
 import { PLUGIN_NAME } from "./constants.js";
 import { getGlobalApi } from "./fakeBdApi.js";
 import { arrayToObject, compat_logger, createTextForm } from "./utils.js";
+type BdPluginInstance = {
+    start: () => void;
+    stop: () => void;
+    getSettingsPanel?: () => typeof React.Component | Node | string;
+    observer?: (mutation: MutationRecord) => void;
+    onSwitch?: () => void;
+};
+type BdPluginExport = (new (meta: Record<string, unknown>) => BdPluginInstance) & ((meta: Record<string, unknown>) => BdPluginInstance);
 export type AssembledBetterDiscordPlugin = {
     started: boolean;
+    partial?: boolean;
     authors: any[];
     name: string;
     originalName: string;
     format: "jsdoc";
-    internals: any;
     description: string;
     id: string;
+    slug: string;
+    author: string;
+    authorId?: string | string[];
+    runAt: "connection" | "idle";
     start: () => void;
     stop: () => void;
-    instance: {
-        start: () => void;
-        stop: () => void;
-        getSettingsPanel: (() => typeof React.Component | Node | string) | undefined;
-        /** @deprecated */
-        getName: () => string;
-        /** @deprecated */
-        getVersion: () => string;
-        /** @deprecated */
-        getDescription: () => string;
-        load: () => void;
-    };
+    exports?: BdPluginExport;
+    instance?: BdPluginInstance;
     options: object;
     version: string;
     invite: string;
@@ -65,11 +68,14 @@ export type AssembledBetterDiscordPlugin = {
     donate: string;
     sourcePath: string | undefined;
     filename: string;
-    myProxy: {} | undefined;
     added?: number;
     modified?: number;
     size?: number;
 };
+const pendingPlugins = new WeakMap<AssembledBetterDiscordPlugin, { code: string; meta: Record<string, unknown>; }>();
+const observedPlugins = new Set<AssembledBetterDiscordPlugin>();
+const forceStartedPlugins = new WeakSet<AssembledBetterDiscordPlugin>();
+let mutationObserver: MutationObserver | undefined;
 const pluginSettingsModalCreator = (props, name: string, child) => {
     return React.createElement(
         ErrorBoundary,
@@ -117,7 +123,14 @@ const pluginSettingsModalCreator = (props, name: string, child) => {
     );
 };
 function openSettingsModalForPlugin(final: AssembledBetterDiscordPlugin) {
-    const panel = final.instance.getSettingsPanel!();
+    let panel: ReturnType<NonNullable<BdPluginInstance["getSettingsPanel"]>> | undefined;
+    try {
+        panel = final.instance?.getSettingsPanel?.();
+    } catch (err) {
+        compat_logger.error(`Unable to get settings panel for ${final.name}.`, err);
+        showToast({ text: `Unable to open settings for ${final.name}.`, variant: "critical" });
+        return;
+    }
     let child: typeof panel | React.ReactElement = panel;
     if (panel instanceof Node || typeof panel === "string")
         (child as unknown as typeof React.Component<{}>) = class ReactWrapper extends React.Component {
@@ -181,23 +194,6 @@ function getFileStats(sourcePath: string, filename: string): { atimeMs: number; 
     }
 }
 
-/** Apply deprecated BD API fallbacks for name/version/description. */
-function applyDeprecatedFallbacks(final: AssembledBetterDiscordPlugin, filename: string): void {
-    // NOSONAR: intentional use of deprecated BD API for backward compatibility
-    if (!final.name && final.instance.getName) { // NOSONAR
-        final.name = final.instance.getName(); // NOSONAR
-        compat_logger.warn(`[${filename}] Using deprecated getName() method. Use @name in JSDoc instead.`);
-    }
-    if (!final.version && final.instance.getVersion) { // NOSONAR
-        final.version = final.instance.getVersion() || "6.6.6"; // NOSONAR
-        compat_logger.warn(`[${filename}] Using deprecated getVersion() method. Use @version in JSDoc instead.`);
-    }
-    if (!final.description && final.instance.getDescription) { // NOSONAR
-        final.description = final.instance.getDescription(); // NOSONAR
-        compat_logger.warn(`[${filename}] Using deprecated getDescription() method. Use @description in JSDoc instead.`);
-    }
-}
-
 /** Check for missing required metadata and throw if incomplete. */
 function validateRequiredMetadata(final: AssembledBetterDiscordPlugin): void {
     const neededMeta = ["name", "version", "description"];
@@ -236,25 +232,20 @@ function buildPluginOptions(final: AssembledBetterDiscordPlugin): Record<string,
     createOption(tempOptions, "authorsLabel", "Author", final.authors[0]?.name);
     return tempOptions;
 }
+function toVencordAuthors(meta: Record<string, any>) {
+    if (Array.isArray(meta.authors)) return meta.authors;
+    const ids: string[] = [meta.authorId ?? []].flat().flatMap((id: string) => id.split(",").map(x => x.trim()));
+    return [meta.author ?? []].flat().map((name: string, i: number) => ({
+        name: name.trim(),
+        id: /^\d+$/.test(ids[i] ?? "") ? BigInt(ids[i]) : 0n
+    }));
+}
 export async function convertPlugin(BetterDiscordPlugin: string, filename: string, detectDuplicateName: boolean = false, sourcePath = "") {
     const final = {} as AssembledBetterDiscordPlugin;
-    // Add file stats
     const stats = getFileStats(sourcePath, filename);
     final.started = false;
     final.sourcePath = sourcePath;
     final.filename = filename;
-    final.authors = [
-        {
-            id: 0n,
-        },
-    ];
-    final.name = "";
-    final.format = "jsdoc";
-    final.internals = {} as any;
-    final.description = "";
-    final.id = "";
-    final.start = () => { };
-    final.stop = () => { };
     final.options = {
         openSettings: {
             type: OptionType.COMPONENT,
@@ -262,89 +253,171 @@ export async function convertPlugin(BetterDiscordPlugin: string, filename: strin
             component: () =>
                 React.createElement(
                     VencordButton,
-                    { onClick: () => openSettingsModalForPlugin(final), disabled: typeof final.instance.getSettingsPanel !== "function" },
+                    { onClick: () => openSettingsModalForPlugin(final), disabled: !final.started || typeof final.instance?.getSettingsPanel !== "function" },
                     "Open settings"
                 ),
         },
     };
-    // Parse metadata
-    const parsedMeta = BetterDiscordPlugin.substring(0, 64).includes("//META")
+    const raw: Record<string, any> = BetterDiscordPlugin.substring(0, 64).includes("//META")
         ? parseLegacyMeta(BetterDiscordPlugin, filename)
-        : parseNewMeta(BetterDiscordPlugin, filename);
-    Object.assign(final, parsedMeta.pluginMeta);
-    // Add file metadata if available
-    if (stats) {
-        final.added = stats.atimeMs;
-        final.modified = stats.mtimeMs;
-        final.size = stats.size;
-    }
-    // we already have all needed meta at this point
-    final.myProxy = new Proxy(final, {
-        get(t, p) {
-            return t[p];
-        }
-    });
-    (window.BdCompatLayer.queuedPlugins as any[]).push(final.myProxy);
-    final.internals = wrapBetterDiscordPluginCode(BetterDiscordPlugin, filename, final.name || final.id);
-    let { exports } = final.internals.module;
-    if (typeof exports === "object") {
-        exports = exports[final.name] ?? exports.default;
-    }
-    if (exports === undefined) {
-        exports = final.internals.module.workingTmp;
-    }
-    try {
-        final.instance = exports.prototype ? new exports(final) : exports(final);
-    }
-    catch (error) {
-        compat_logger.error("Something snapped during instatiation of exports for file:", filename, "The error was:", error);
-        throw error;
-    }
-    // passing the plugin object directly as "meta".
-    if (typeof final.instance.load === "function")
-        final.instance.load();
-    applyDeprecatedFallbacks(final, filename);
-    console.log(final.instance);
-    (final as any).originalName = final.name;
+        : parseJsDoc(BetterDiscordPlugin, filename);
+    const meta: Record<string, unknown> = {
+        ...raw,
+        author: typeof raw.author === "string" && raw.author ? raw.author : "Unknown Author",
+        version: typeof raw.version === "string" && raw.version ? raw.version : "???",
+        description: typeof raw.description === "string" && raw.description ? raw.description : "Description not provided.",
+        runAt: raw.runAt === "idle" ? "idle" : "connection",
+        format: "jsdoc",
+        id: raw.name || filename,
+        slug: filename.replace(".plugin.js", "").replaceAll(" ", "-"),
+        filename,
+    };
+    if (stats) Object.assign(meta, { added: stats.atimeMs, modified: stats.mtimeMs, size: stats.size });
+    Object.assign(final, meta, { authors: toVencordAuthors(raw) });
+    final.originalName = final.name;
     if (detectDuplicateName) {
-        // eslint-disable-next-line @typescript-eslint/dot-notation
-        if (Vencord.Plugins.plugins[final.name] && !Vencord.Plugins.plugins[final.name]["instance"]) {
+        const existing = Vencord.Plugins.plugins[final.name];
+        if (existing && !window.GeneratedPlugins.includes(existing)) {
             final.name += "-BD";
         }
     }
     validateRequiredMetadata(final);
     final.options = { ...buildPluginOptions(final), ...final.options };
     const startFunction = function (this: AssembledBetterDiscordPlugin) {
-        const compatLayerSettings = Vencord.Settings.plugins[PLUGIN_NAME];
-        compatLayerSettings.pluginsStatus[this.name] = true;
-        this.instance.start();
+        const { pluginsStatus } = Vencord.Settings.plugins[PLUGIN_NAME];
+        pluginsStatus[this.name] = true;
+        forceStartedPlugins.delete(this);
+        try {
+            const instance = initPlugin(this);
+            instance.start();
+            if (typeof instance.observer === "function") observeMutations(this);
+        } catch (err) {
+            pluginsStatus[this.name] = false;
+            Vencord.Settings.plugins[this.name].enabled = false;
+            throw err;
+        }
     };
     const stopFunction = function (this: AssembledBetterDiscordPlugin) {
-        const compatLayerSettings = Vencord.Settings.plugins[PLUGIN_NAME];
-        compatLayerSettings.pluginsStatus[this.name] = false;
-        this.instance.stop();
+        Vencord.Settings.plugins[PLUGIN_NAME].pluginsStatus[this.name] = false;
+        observedPlugins.delete(this);
+        if (!observedPlugins.size) {
+            mutationObserver?.disconnect();
+            mutationObserver = undefined;
+        }
+        this.instance?.stop();
     };
     final.start = startFunction.bind(final);
     final.stop = stopFunction.bind(final);
-    const index = (window.BdCompatLayer.queuedPlugins as any[]).findIndex(x => x.filename === final.filename);
-    if (index !== -1) {
-        (window.BdCompatLayer.queuedPlugins as any[]).splice(index, 1);
-    }
-    delete final.myProxy;
-    console.log(final);
+    pendingPlugins.set(final, { code: BetterDiscordPlugin, meta });
     return final;
+}
+
+function initPlugin(p: AssembledBetterDiscordPlugin) {
+    if (p.instance) return p.instance;
+    const pending = pendingPlugins.get(p);
+    if (!pending) throw new Error(`${p.name} failed to load earlier. Reload it to try again.`);
+    pendingPlugins.delete(p);
+    try {
+        let exports = runPluginCode(pending.code, p.filename, p.originalName);
+        if (exports !== null && typeof exports === "object") {
+            const exported = exports as Record<string, unknown>;
+            exports = exported[p.originalName] ?? exported.default;
+        }
+        if (typeof exports !== "function") throw new Error("Plugins should be either a function or a class.");
+        const pluginExport = exports as BdPluginExport;
+        const instance = pluginExport.prototype ? new pluginExport({ ...pending.meta }) : pluginExport({ ...pending.meta });
+        if (typeof instance?.start !== "function" || typeof instance.stop !== "function") {
+            throw new Error("Plugins must have both a start and stop function.");
+        }
+        p.exports = pluginExport;
+        p.instance = instance;
+        return instance;
+    } catch (err) {
+        p.partial = true;
+        throw err;
+    }
+}
+
+function observeMutations(plugin: AssembledBetterDiscordPlugin) {
+    observedPlugins.add(plugin);
+    if (mutationObserver) return;
+    mutationObserver = new MutationObserver(mutations => {
+        for (const mutation of mutations) {
+            for (const p of observedPlugins) {
+                try {
+                    p.instance?.observer?.(mutation);
+                } catch (err) {
+                    compat_logger.error(`Unable to fire observer for ${p.name} v${p.version}`, err);
+                }
+            }
+        }
+    });
+    mutationObserver.observe(document, { childList: true, subtree: true });
+}
+
+export function fireOnSwitch() {
+    for (const p of window.GeneratedPlugins as AssembledBetterDiscordPlugin[]) {
+        if (!p.started || typeof p.instance?.onSwitch !== "function") continue;
+        try {
+            p.instance.onSwitch();
+        } catch (err) {
+            compat_logger.error(`Unable to fire onSwitch for ${p.name} v${p.version}`, err);
+        }
+    }
+}
+
+export function startPluginsAt(plugins: AssembledBetterDiscordPlugin[], point: "connection" | "idle") {
+    for (const p of plugins) {
+        if (p.runAt !== point || p.started || !window.GeneratedPlugins.includes(p)) continue;
+        if (Vencord.Settings.plugins[PLUGIN_NAME].pluginsStatus[p.name]) {
+            if (!Vencord.Plugins.startPlugin(p as Plugin)) showToast({ text: `${p.name} v${p.version} could not be started.`, variant: "critical" });
+        } else if (p.filename === "0BDFDB.plugin.js") {
+            try {
+                initPlugin(p).start();
+                forceStartedPlugins.add(p);
+            } catch (err) {
+                compat_logger.error(`${p.name} v${p.version} could not be started.`, err);
+            }
+        }
+    }
+}
+
+export function onceIdle() {
+    return new Promise<void>(resolve => {
+        const loadChunk = wreq.e;
+        const waitStart = performance.now();
+        let pending = 1;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const loadEnd = () => {
+            if (--pending > 0) return;
+            clearTimeout(timer);
+            timer = setTimeout(() => {
+                if (wreq.e === trackedLoad) wreq.e = loadChunk;
+                resolve();
+            }, 50);
+        };
+        const trackedLoad: typeof loadChunk = function (chunkId) {
+            pending++;
+            clearTimeout(timer);
+            return loadChunk.call(this, chunkId).finally(loadEnd);
+        };
+        wreq.e = trackedLoad;
+        const waitForFirstRender = () => {
+            if (performance.getEntriesByName("app_first_render_after_ready_payload").length || performance.now() - waitStart > 15000) loadEnd();
+            else requestIdleCallback(waitForFirstRender);
+        };
+        waitForFirstRender();
+    });
 }
 
 function parseLegacyMeta(pluginCode: string, filename: string) {
     const theLine = pluginCode.split("*//")[0].split("//META")[1];
-    const parsedLine = {} as { name: string, id: string, description: string, authors: { id: number, name: string; }[], version: string; };
     try {
-        Object.assign(parsedLine, JSON.parse(theLine));
+        return JSON.parse(theLine);
     } catch (error) {
         compat_logger.error("Something snapped during parsing of meta for file:", filename, "The error was:", error);
         throw error; // let the caller handle this
     }
-    return { pluginMeta: parsedLine, metaEndLine: 1 };
 }
 const as_yes_no = (b: boolean) => b ? "yes" : "no";
 const test_util = (source: string, what: string) => {
@@ -373,7 +446,7 @@ const stripBOM = (fileContent: string) => {
 };
 const splitRegex = /[^\S\r\n]*?\r?(?:\r\n|\n)[^\S\r\n]*?\*[^\S\r\n]?/;
 const escapedAtRegex = /^\\@/;
-function parseNewMeta(pluginCode: string, filename: string) {
+export function parseJsDoc(pluginCode: string, filename: string) {
     const firstLine = pluginCode.split("\n")[0];
     if (!firstLine.includes("/**")) {
         throw new Error("No JSDoc metadata found");
@@ -444,73 +517,26 @@ function parseNewMeta(pluginCode: string, filename: string) {
     }
     delete out[""];
     out.format = "jsdoc";
-    // Handle author array
-    const resultMeta = {
-        name: out.name as string || "",
-        id: out.name as string || window.require("path").basename(filename),
-        description: out.description as string || "No description",
-        authors: [] as { id: number; name: string; }[],
-        version: out.version as string || "???",
-        format: "jsdoc" as const
-    };
-    // Parse authors
-    const authorField = out.author;
-    const authorIdField = out.authorId;
-    if (authorField) {
-        const authorNames = Array.isArray(authorField) ? authorField : [authorField];
-        let authorIdList: string[] = [];
-        if (authorIdField) {
-            authorIdList = Array.isArray(authorIdField) ? authorIdField : [authorIdField];
-        }
-        const authorIds = authorIdList.map(id => BigInt(id.trim()));
-        authorNames.forEach((name, i) => {
-            resultMeta.authors.push({
-                name: name.trim(),
-                id: (authorIds[i] ?? 0n) as unknown as number
-            });
-        });
-    }
-    // Copy other metadata
-    for (const key in out) {
-        if (!["name", "description", "author", "authorId", "version", "format"].includes(key)) {
-            resultMeta[key] = out[key];
-        }
-    }
-    const metaEndLine = block.split(splitRegex).length + 3;
-    return { pluginMeta: resultMeta, metaEndLine };
+    return out;
 }
-const normalizeExports = (name: string) => `
-if (module.exports.default) {
-    module.exports = module.exports.default;
-}
-if (typeof(module.exports) !== "function") {
-    module.exports = eval(${JSON.stringify(name)});
-}`;
-function wrapBetterDiscordPluginCode(pluginCode: string, filename: string, pluginName: string) {
-    pluginCode = stripBOM(pluginCode);
-    const module = { filename, exports: {} };
-    const scopeVars = [
-        "const exports = module.exports;",
-        "const global = window;",
-        "const process = window.process;",
-        "console.log('Plugin wrapper DiscordNative check:', window.DiscordNative, window.DiscordNative?.nativeModules);",
-        "const DiscordNative=(window.DiscordNative||(window.DiscordNative={}));Object.defineProperty(DiscordNative,'clipboard',{configurable:true,get:()=>window.BdCompatLayer.fakeClipboard});",
-    ].join("\n");
-    pluginCode = scopeVars + "\n" + pluginCode;
-    pluginCode += normalizeExports(pluginName);
-    pluginCode += `\n//# sourceURL=betterdiscord://plugins/${filename}`;
-    const wrappedPlugin = new Function(
-        "require",
-        "module",
-        "__filename",
-        "__dirname",
-        pluginCode
+const exportFallback = (name: string) => /^[A-Za-z_$][\w$]*$/.test(name)
+    ? `\nif (typeof module.exports !== "function" && typeof ${name} === "function") module.exports = ${name};`
+    : "";
+function runPluginCode(pluginCode: string, filename: string, pluginName: string) {
+    const module: { filename: string; exports: unknown; } = { filename, exports: {} };
+    const { folder } = getGlobalApi().Plugins;
+    const discordNative = window.DiscordNative ??= {};
+    Object.defineProperty(discordNative, "clipboard", { configurable: true, get: () => window.BdCompatLayer.fakeClipboard });
+    const createWrapper = new Function(
+        "global",
+        "process",
+        "DiscordNative",
+        `return function (require, module, exports, __filename, __dirname) {\n${stripBOM(pluginCode)}\nif (module.exports.default) module.exports = module.exports.default;${exportFallback(pluginName)}\n}\n//# sourceURL=betterdiscord://plugins/${filename}`
     );
-    const fullPath = `${getGlobalApi().Plugins.folder}/${filename}`;
-    wrappedPlugin(window.require, module, fullPath, getGlobalApi().Plugins.folder);
-    return { module };
+    createWrapper(window, window.process, discordNative)(window.require, module, module.exports, `${folder}/${filename}`, folder);
+    return module.exports;
 }
-export async function addCustomPlugin(generatedPlugin: AssembledBetterDiscordPlugin) {
+export async function addCustomPlugin(generatedPlugin: AssembledBetterDiscordPlugin, start = true) {
     const { GeneratedPlugins } = window;
     const generated = generatedPlugin;
     PluginMeta[generated.name] = { userPlugin: true, folderName: `${generated.name}/${generated.filename}` };
@@ -521,14 +547,14 @@ export async function addCustomPlugin(generatedPlugin: AssembledBetterDiscordPlu
             Math.trunc((window as any).require?.("fs")?.statSync(`${getGlobalApi().Plugins.folder}/${generated.filename}`)?.mtimeMs ?? 0);
     } catch { }
     Vencord.Settings.plugins[generated.name].enabled = false;
+    GeneratedPlugins.push(Vencord.Plugins.plugins[generated.name]);
     const compatLayerSettings = Vencord.PlainSettings.plugins[PLUGIN_NAME];
     if (generatedPlugin.name in compatLayerSettings.pluginsStatus) {
         const thePluginStatus = compatLayerSettings.pluginsStatus[generatedPlugin.name];
         Vencord.Settings.plugins[generated.name].enabled = thePluginStatus;
-        if (thePluginStatus === true)
+        if (thePluginStatus === true && start)
             Vencord.Plugins.startPlugin(Vencord.Plugins.plugins[generated.name]);
     }
-    GeneratedPlugins.push(Vencord.Plugins.plugins[generated.name]);
 }
 export async function removeAllCustomPlugins() {
     const { GeneratedPlugins } = window as Window & typeof globalThis & { GeneratedPlugins: AssembledBetterDiscordPlugin[]; };
@@ -541,6 +567,12 @@ export async function removeAllCustomPlugins() {
             Vencord.Plugins.stopPlugin(generated as Plugin);
             if (currentStatus === true)
                 Vencord.Settings.plugins[PLUGIN_NAME].pluginsStatus[generated.name] = currentStatus;
+        } else if (forceStartedPlugins.has(generated)) {
+            try {
+                generated.instance?.stop();
+            } catch (err) {
+                compat_logger.error(`${generated.name} could not be stopped.`, err);
+            }
         }
         delete PluginMeta[generated.name];
         delete Vencord.Plugins.plugins[generated.name];

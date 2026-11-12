@@ -26,13 +26,17 @@
 
 // Ambient typing for BdApi.UI.showToast to accept both number and options object.
 
-export type BdToastType = "" | "info" | "success" | "warn" | "warning" | "error" | "danger";
+export type BdToastType = "" | "default" | "info" | "success" | "warn" | "warning" | "error" | "danger";
+
+export interface BdToastOptions {
+    type?: BdToastType;
+    timeout?: number;
+    forceShow?: boolean;
+    icon?: boolean;
+}
 
 export interface BdApiUICompat {
-    showToast(
-        message: string,
-        opts?: number | { type?: BdToastType; timeout?: number; forceShow?: boolean; icon?: boolean; }
-    ): void;
+    showToast(message: string, opts?: number | BdToastOptions): void;
 }
 
 export interface BdApiCompatGlobal {

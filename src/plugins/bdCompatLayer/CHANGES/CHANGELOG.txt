@@ -105,3 +105,18 @@
 
 *** /ui/changelog.tsx
 - Added changelog.tsx (changelog modal implementation)
+
+*** 2026-11-12: BetterDiscord v1.14.5 parity update (Pharaoh2k)
+- Webpack: ported BD's search engine to bdModules/webpack.ts (map, withKey, declarationFilter, mapDeclarations, searchDefault, fatal, firstId, real raw module records, ids stamped for bySource on rspack)
+- Webpack: waitForModule now uses module listeners with BD's batched lookup and abort handling; added getProxy, getMangledProxy, Filters.byDestructure; getMangled accepts arrays and numeric ids; getBulk rewritten on the new engine
+- Webpack: module.declarations exposed through a factory transformer in src/webpack/patchWebpack.ts, using BD's vendored parser (bdModules/parseDeclarations.ts)
+- Patcher: 1.14 instead chaining (original runs once), args are real arrays, safe double unpatch, pluginSource, this-free global BdApi.Patcher
+- ContextMenu: 1.13.6+ engine (Flux CONTEXT_MENU_OPEN interceptor plus node patcher), RegExp and glob navIds, instance passed to callbacks, 1.14.5 buildItem
+- Commands: caller-bound API, BD validation, real command names, BetterDiscord bot messages, full option passthrough
+- Loader: lazy init (disabled plugins never run), BD meta object, clean wrapper scope, @runAt connection/idle, start failure handling, 0BDFDB force start, shared observer, Navigation API onSwitch
+- API: BdApi.version, bound Logger, Plugins/Themes resolution and return values, DOM ids via CSS.escape, createElement/parseHTML parity, Utils.cache/mapObject/loadEntry, strict semverCompare, BD extend
+- Net: fetch runs in the main process (no CORS, keeps forbidden headers, timeout, redirects, webhook block, abort)
+- UI: showToast on the new Toasts API, Discord modals for confirmations, rebuilt buildSettingsPanel (enableWith/disableWith, collapsible categories, file and position types), BD notices, notification render API, openFloatingWindow
+- Components: Button/Text statics, stable ErrorBoundary/Flex, rebuilt inputs on BD's value/defaultValue contract, new ColorInput/NumberInput/SliderInput/SearchInput/Checkbox/Modal
+- Hooks/ReactUtils: BD useStateFromStores, wrapInHooks covers use/readContext/useActionState/useOptimistic, getOwnerInstance and wrapElement parity
+- fileSystemViewer.tsx: Monaco loads from jsDelivr (monaco-editor 0.57.0 +esm) since upstream dropped the monaco-editor dependency

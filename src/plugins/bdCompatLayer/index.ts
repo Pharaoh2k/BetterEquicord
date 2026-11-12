@@ -25,7 +25,9 @@ import { Settings } from "@api/Settings";
 import { copyToClipboard } from "@utils/clipboard";
 import { Devs } from "@utils/constants";
 import definePlugin, { OptionType } from "@utils/types";
+import { onceReady } from "@webpack";
 import { React } from "@webpack/common";
+import { factoryTransformers } from "@webpack/patcher";
 
 import { PluginMeta } from "~plugins";
 declare global {
@@ -39,12 +41,15 @@ declare global {
         require?: any;
     }
 }
+import { removeContextMenuInterceptor } from "./bdModules/contextmenu";
+import { addModuleDeclarations } from "./bdModules/webpack";
 import { ZENFS_BUILD_HASH } from "./constants";
 import { cleanupGlobal, createGlobalBdApi, getGlobalApi } from "./fakeBdApi";
 import { addContextMenu, addDiscordModules, FakeEventEmitter, fetchWithCorsProxyFallback, Patcher } from "./fakeStuff";
 import { injectSettingsTabs, unInjectSettingsTab } from "./fileSystemViewer";
-import { addCustomPlugin, convertPlugin, removeAllCustomPlugins } from "./pluginConstructor";
+import { addCustomPlugin, AssembledBetterDiscordPlugin, convertPlugin, fireOnSwitch, onceIdle, removeAllCustomPlugins, startPluginsAt } from "./pluginConstructor";
 import { ReactUtils_filler } from "./stuffFromBD";
+import { cleanupBdUi } from "./ui/common";
 import { aquireNative, compat_logger, FSUtils, getDeferred, reloadCompatLayer, simpleGET, ZIPUtils } from "./utils";
 
 /** Convert GitHub raw URLs to raw.githubusercontent.com format. */
@@ -93,6 +98,10 @@ const pluginState = {
     globalWasNotExisting: false,
     globalDefineWasNotExisting: false
 };
+
+// Runs before Discord's modules execute so module.declarations exists on every module, like BD's preload
+if (Settings.plugins["BD Compatibility Layer"]?.enabled) factoryTransformers.add(addModuleDeclarations);
+
 export default definePlugin({
     name: "BD Compatibility Layer",
     description: "Converts BD plugins to run in Vencord",
@@ -203,6 +212,7 @@ export default definePlugin({
     },
 
     start() {
+        factoryTransformers.add(addModuleDeclarations);
         injectSettingsTabs();
         const reimplementationsReady = getDeferred<void>();
         let nobleReady = false;
@@ -212,7 +222,7 @@ export default definePlugin({
             sha1?: any;
             md5?: any;
         } = {};
-        (async () => {
+        const nobleLoaded = (async () => {
             try {
                 /* Compatibility shim for BetterDiscord plugins that expect Node's crypto:
                    we provide only the missing createHash() and randomBytes() for 1:1 parity.
@@ -221,7 +231,7 @@ export default definePlugin({
                     Third-party CDNs require explicit CSP allowances and have integrity trade-offs.
                      If a CDN is unavoidable, pin exact versions and document CSP/import-map settings.
                    - Hashing uses @noble/hashes (audited, 0-dep, streaming API). It's fast in practice;
-                     actual bundle size depends on imported algorithms (e.g., sha256 ~5–6 KB unminified).
+                     actual bundle size depends on imported algorithms (e.g., sha256 ~5-6 KB unminified).
                    - randomBytes() is backed by window.crypto.getRandomValues() (web CSPRNG).
                    Scope & safety:
                    - Intended for non-secret tasks (e.g., cache keys, file checksums, deduping).
@@ -281,7 +291,6 @@ export default definePlugin({
                     const zen = globalThis.ZenFS_Aquire();
                     const ZenFs = zen.zenfs;
                     const ZenFsDom = zen.zenfs_dom;
-                    const temp: any = {};
                     const target = {
                         browserFSSetting: {},
                         client: null as typeof zen.RealFSClient | null,
@@ -317,25 +326,14 @@ export default definePlugin({
                     );
                 });
         }
-        let _Router = null;
         const windowBdCompatLayer = {
             FSUtils,
             ZIPUtils,
             reloadCompatLayer,
             fsReadyPromise: getDeferred(),
-            mainObserver: {},
-            mainRouterListener: () =>
-                window.GeneratedPlugins.forEach(plugin =>
-                    BdApiReImplementation.Plugins.isEnabled(plugin.name) && typeof plugin.instance.onSwitch === "function" && plugin.instance.onSwitch()
-                ),
-            get Router() {
-                _Router ??= BdApiReImplementation.Webpack.getModule(x => x.listeners && x.flushRoute);
-                return _Router as null | { listeners: Set<Function>; };
-            },
             fakeClipboard: undefined as any,
             fakeFileManager: undefined as any,
             wrapPluginCode: (code: string, filename = "RuntimeGenerated.plugin.js") => { return convertPlugin(code, filename, false); },
-            queuedPlugins: [],
         };
         window.BdCompatLayer = windowBdCompatLayer;
         window.GeneratedPlugins = [];
@@ -1022,14 +1020,7 @@ export default definePlugin({
         Promise.all([
             windowBdCompatLayer.fsReadyPromise.promise,
             injectedAndPatched,
-            new Promise(resolve => {
-                const checkCrypto = setInterval(() => {
-                    if (nobleReady) {
-                        clearInterval(checkCrypto);
-                        resolve(undefined);
-                    }
-                }, 100);
-            })
+            nobleLoaded
         ]).then(async () => {
             // Cache temp dir for sync os.tmpdir() calls
             try {
@@ -1216,33 +1207,7 @@ export default definePlugin({
                     log("BDCompat.debug =", DEBUG);
                 }
             })();
-            getGlobalApi().DOM.addStyle("bd-compat-layer-stuff", ".bd-compat-setting .vc-plugins-setting-title { display: none; }");
-            windowBdCompatLayer.Router?.listeners.add(windowBdCompatLayer.mainRouterListener);
-            const FluxDispatcher = BdApiReImplementation.Webpack.getModule(m => m?.dispatch && m?.subscribe);
-            if (FluxDispatcher) {
-                const triggerOnSwitch = () => {
-                    window.GeneratedPlugins.forEach(plugin => {
-                        if (BdApiReImplementation.Plugins.isEnabled(plugin.name) &&
-                            typeof plugin.instance?.onSwitch === "function") {
-                            try {
-                                plugin.instance.onSwitch();
-                            } catch (err) {
-                                compat_logger.error(`Unable to fire onSwitch for ${plugin.name}`, err);
-                            }
-                        }
-                    });
-                };
-                ["CHANNEL_SELECT", "GUILD_SELECT", "LAYER_POP"].forEach(eventType => {
-                    FluxDispatcher.subscribe(eventType, triggerOnSwitch);
-                });
-                compat_logger.info("BD-style navigation listeners initialized (simulating Electron IPC)");
-            }
-            const observer = new MutationObserver(mutations => mutations.forEach(m => window.GeneratedPlugins.forEach(p => BdApiReImplementation.Plugins.isEnabled(p.name) && p.instance.observer?.(m))));
-            observer.observe(document, {
-                childList: true,
-                subtree: true
-            });
-            windowBdCompatLayer.mainObserver = observer;
+            window.navigation?.addEventListener("currententrychange", fireOnSwitch);
             const localFs = window.require("fs");
             localFs.mkdirSync(BdApiReImplementation.Plugins.folder, { recursive: true });
             for (const key in this.options) {
@@ -1276,15 +1241,23 @@ export default definePlugin({
             const plugins = pluginFolder.filter(x =>
                 x.endsWith(".plugin.js")
             );
+            const loadedPlugins: AssembledBetterDiscordPlugin[] = [];
             for (const element of plugins) {
                 const pluginJS = localFs.readFileSync(
                     BdApiReImplementation.Plugins.folder + "/" + element,
                     "utf8"
                 );
-                convertPlugin(pluginJS, element, true, BdApiReImplementation.Plugins.folder).then(plugin => {
-                    addCustomPlugin(plugin);
-                });
+                try {
+                    const plugin = await convertPlugin(pluginJS, element, true, BdApiReImplementation.Plugins.folder);
+                    await addCustomPlugin(plugin, false);
+                    loadedPlugins.push(plugin);
+                } catch (err) {
+                    compat_logger.error(`Failed to load ${element}`, err);
+                }
             }
+            await onceReady;
+            startPluginsAt(loadedPlugins, "connection");
+            onceIdle().then(() => startPluginsAt(loadedPlugins, "idle"));
             if (!localFs.existsSync(BdApiReImplementation.Themes.folder)) {
                 FSUtils.mkdirSyncRecursive(BdApiReImplementation.Themes.folder);
             }
@@ -1300,76 +1273,6 @@ export default definePlugin({
                 }
             }
         });
-        BdApiReImplementation.DOM.addStyle("OwOStylesOwO", `
-            .custom-notification {
-                display: flex;
-                flex-direction: column;
-                position: absolute;
-                bottom: 20px; right: 20px;
-                width: 440px; height: 270px;
-                overflow: hidden;
-                background-color: var(--modal-background);
-                color: white;
-                border-radius: 5px;
-                box-shadow: var(--legacy-elevation-border),var(--legacy-elevation-high);
-                animation: 1s slide cubic-bezier(0.39, 0.58, 0.57, 1);
-                z-index: 1;
-            }
-            @keyframes slide {
-                0% {
-                    right: -440px;
-                }
-                100% {
-                    right: 20px;
-                }
-            }
-            .custom-notification.close {
-                animation: 1s gobyebye cubic-bezier(0.39, 0.58, 0.57, 1) forwards;
-                right: 20px;
-            }
-            @keyframes gobyebye {
-                0% {
-                    right: 20px;
-                }
-                100% {
-                    right: -440px;
-                }
-            }
-            .custom-notification .top-box {padding: 16px;}
-            .custom-notification .notification-title {font-size: 20px; font-weight: bold;}
-            .custom-notification .content {
-                padding: 0 16px 20px;
-                flex: 1 1 auto;
-                overflow: hidden;
-            }
-            .custom-notification .bottom-box {
-                background-color: var(--modal-footer-background);
-                padding: 16px;
-                display: flex;
-                justify-content: flex-end;
-                align-items: center;
-            }
-            .custom-notification .confirm-button {
-                background-color: #007bff;
-                color: white;
-                border-radius: 5px;
-                padding: 5px 10px;
-                margin: 0 5px;
-            }
-            .custom-notification .cancel-button {
-                background-color: red;
-                color: white;
-                border-radius: 5px;
-                padding: 5px 10px;
-                margin: 0 5px;
-            }
-            .button-with-svg {
-                position: absolute;
-                right: 15px;
-                margin-top: -0px !important;
-                background: transparent;
-            }
-        `);
         BdApiReImplementation.DOM.addStyle("bd-flex-styles", `
             .bd-flex {
                 display: flex;
@@ -1451,21 +1354,15 @@ export default definePlugin({
         `);
     },
     async stop() {
-        compat_logger.warn("Disabling observer...");
-        if (window.BdCompatLayer?.mainObserver) {
-            window.BdCompatLayer.mainObserver.disconnect();
-        }
+        factoryTransformers.delete(addModuleDeclarations);
         compat_logger.warn("Removing onSwitch listener...");
-        if (window.BdCompatLayer?.Router?.listeners) {
-            window.BdCompatLayer.Router.listeners.delete(window.BdCompatLayer.mainRouterListener);
-        }
+        window.navigation?.removeEventListener("currententrychange", fireOnSwitch);
         compat_logger.warn("UnPatching context menu...");
-        getGlobalApi().Patcher.unpatchAll("ContextMenuPatcher");
+        removeContextMenuInterceptor();
         compat_logger.warn("Removing plugins...");
         await removeAllCustomPlugins();
         compat_logger.warn("Removing added css...");
-        getGlobalApi().DOM.removeStyle("OwOStylesOwO");
-        getGlobalApi().DOM.removeStyle("bd-compat-layer-stuff");
+        cleanupBdUi();
         compat_logger.warn("Removing settings tab...");
         unInjectSettingsTab();
         if (pluginState.globalDefineWasNotExisting === true) {
@@ -1486,9 +1383,9 @@ export default definePlugin({
             const api = getGlobalApi();
             if (api?.Commands) {
                 // Clear all BD commands from Vencord's registry
-                Object.keys(VencordCommands.commands).forEach(name => {
-                    if (name.startsWith("bd-")) {
-                        VencordCommands.unregisterCommand(name);
+                Object.values(VencordCommands.commands).forEach(cmd => {
+                    if (cmd.plugin?.startsWith("BD:")) {
+                        VencordCommands.unregisterCommand(cmd.name);
                     }
                 });
             }

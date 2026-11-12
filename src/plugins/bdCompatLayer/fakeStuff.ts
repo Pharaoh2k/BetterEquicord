@@ -29,12 +29,15 @@
  * SPDX-License-Identifier: GPL-3.0-only
  */
 
+import { Settings } from "@api/Settings";
+import { PluginNative } from "@utils/types";
+
 import { createContextMenu } from "./bdModules/contextmenu";
 import { createDiscordModules } from "./bdModules/discordmodules";
-const Native = VencordNative.pluginHelpers["BD Compatibility Layer"] as {
-    corsFetch: (url: string) => Promise<{ ok: boolean; status: number; body: string; } | { error: string; }>;
-};
+import { PLUGIN_NAME } from "./constants";
+import type { NetFetchInit, NetFetchResponse } from "./native";
 import { compat_logger } from "./utils";
+const Native = VencordNative.pluginHelpers[PLUGIN_NAME] as PluginNative<typeof import("./native")> | undefined;
 
 export { Patcher } from "./stuffFromBD";
 
@@ -81,9 +84,8 @@ export const addDiscordModules = async (_proxyUrl: string) => {
  * @param _proxyUrl - Unused, kept for API compatibility
  */
 export const addContextMenu = async (DiscordModules: any, _proxyUrl: string) => {
-    const { Patcher } = window.BdApi;
     return {
-        output: createContextMenu(Patcher),
+        output: createContextMenu(),
         sourceBlobUrl: undefined
     };
 };
@@ -142,9 +144,9 @@ async function tryExtensionFetch(url: string): Promise<Response | null> {
 
 async function tryNativeFetch(url: string): Promise<Response | null> {
     try {
-        const result = await Native.corsFetch(url);
+        const result = await Native?.corsFetch(url);
 
-        if ("error" in result) {
+        if (!result || "error" in result) {
             return null;
         }
 
@@ -222,3 +224,38 @@ export async function fetchWithCorsProxyFallback(url: string, corsProxy: string,
     compat_logger.debug(`[${reqId}] All methods failed.`);
     throw new Error("All fetch methods failed");
 }
+
+type BdFetchInit = RequestInit & Pick<NetFetchInit, "timeout" | "maxRedirects" | "rejectUnauthorized">;
+const BD_FETCH_METHODS = new Set(["GET", "PUT", "POST", "DELETE", "PATCH", "OPTIONS", "HEAD", "CONNECT", "TRACE"]);
+
+async function bdFetch(input: string | URL | Request, init?: BdFetchInit | null): Promise<Response> {
+    const request = new Request(input instanceof URL ? input.href : input, init ?? undefined);
+    if (!Native?.netFetch) return fetchWithCorsProxyFallback(request.url, Settings.plugins[PLUGIN_NAME].corsProxyUrl, init ?? {});
+    const headers = init?.headers ? new Headers(init.headers) : request.headers;
+    const body = request.body ? new Uint8Array(await request.arrayBuffer()) : null;
+    const { signal } = request;
+    signal.throwIfAborted();
+    const id = crypto.randomUUID();
+    const result = await new Promise<NetFetchResponse | { error: string; }>((resolve, reject) => {
+        const onAbort = () => {
+            Native.abortNetFetch(id);
+            reject(signal.reason);
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+        Native.netFetch(id, request.url, {
+            method: BD_FETCH_METHODS.has(request.method) ? request.method : "GET",
+            headers: Object.fromEntries(headers),
+            body,
+            redirect: request.redirect,
+            timeout: init?.timeout,
+            maxRedirects: init?.maxRedirects ?? 20,
+            rejectUnauthorized: init?.rejectUnauthorized ?? true
+        }).then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+    });
+    if ("error" in result) throw new Error(result.error);
+    const response = new Response(result.body, { status: result.status, statusText: result.statusText, headers: result.headers });
+    Object.defineProperties(response, { url: { value: result.url }, redirected: { value: result.redirected } });
+    return response;
+}
+
+export const BdNet = Object.freeze({ fetch: bdFetch });

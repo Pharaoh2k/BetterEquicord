@@ -19,46 +19,36 @@
  * SPDX-License-Identifier: GPL-3.0-only
  */
 
-import { React, useMemo, useState } from "@webpack/common";
+import { React } from "@webpack/common";
+
+export interface RadioOption {
+    name: string;
+    value: unknown;
+    description?: string;
+    color?: string;
+}
 
 export function RadioSettingComponent(props: Readonly<{
-    onChange: (value: any) => void;
-    option: any;
-    id: string;
+    name?: string;
+    value: unknown;
+    options: RadioOption[];
+    disabled?: boolean;
+    onChange(value: unknown): void;
 }>) {
-    const disabled = !!props.option?.disabled;
-    const [selected, setSelected] = useState<any>(props.option?.value ?? null);
-
-    const options = useMemo(() => {
-        const raw = props.option?.options || [];
-        return raw.map(opt =>
-            typeof opt === "object"
-                ? { name: opt.name || opt.label || String(opt.value), value: opt.value, desc: opt.desc || opt.description || "" }
-                : { name: String(opt), value: opt, desc: "" }
-        );
-    }, [props.option?.options]);
-
-    const commit = (val: any) => {
-        if (disabled) return;
-        setSelected(val);
-        props.onChange(val);
-    };
-
-    const groupId = `radio-${props.id}`;
-    const labelId = `${groupId}-label`;
-    const descId = `${groupId}-desc`;
+    const { disabled, options } = props;
+    const fallbackId = React.useId();
+    const groupId = props.name ?? `radio-${fallbackId}`;
 
     return (
         <div style={{ display: "grid", gap: "8px", opacity: disabled ? 0.5 : 1 }}>
-
-            <div role="radiogroup" aria-labelledby={labelId} aria-describedby={descId} style={{ display: "grid", gap: "8px" }}>
+            <div role="radiogroup" style={{ display: "grid", gap: "8px" }}>
                 {options.map((opt, i) => {
-                    const checked = selected === opt.value;
+                    const checked = props.value === opt.value;
                     const radioId = `${groupId}-${i}`;
 
                     return (
                         <label
-                            key={String(opt.value)}
+                            key={i}
                             htmlFor={radioId}
                             style={{
                                 position: "relative",
@@ -69,7 +59,7 @@ export function RadioSettingComponent(props: Readonly<{
                                 borderRadius: "4px",
                                 background: checked ? "var(--background-mod-strong)" : "var(--background-base-lower)",
                                 cursor: disabled ? "not-allowed" : "pointer",
-                                outline: "1px solid var(--background-secondary-alt)"
+                                outline: `1px solid ${opt.color ?? "var(--background-secondary-alt)"}`
                             }}
                         >
                             <input
@@ -77,7 +67,7 @@ export function RadioSettingComponent(props: Readonly<{
                                 type="radio"
                                 name={groupId}
                                 checked={checked}
-                                onChange={() => commit(opt.value)}
+                                onChange={() => props.onChange(opt.value)}
                                 disabled={disabled}
                                 style={{
                                     position: "absolute",
@@ -102,16 +92,12 @@ export function RadioSettingComponent(props: Readonly<{
                             />
                             <span style={{ display: "grid", gap: "2px", color: "var(--text-default)" }}>
                                 <span style={{ fontWeight: 600, fontSize: "1rem", lineHeight: 1.4 }}>{opt.name}</span>
-                                {opt.desc && <span style={{ fontSize: "0.875rem", lineHeight: 1.3, opacity: 0.75 }}>{opt.desc}</span>}
+                                {opt.description && <span style={{ fontSize: "0.875rem", lineHeight: 1.3, opacity: 0.75 }}>{opt.description}</span>}
                             </span>
                         </label>
                     );
                 })}
             </div>
-
-            <div id={descId} style={{ fontSize: "0.875rem", opacity: 0.7, color: "var(--text-muted)" }}>
-                Use ↑/↓ or ←/→ to move, Space/Enter to select.
-            </div>
-        </div >
+        </div>
     );
 }

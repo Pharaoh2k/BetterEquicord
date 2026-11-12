@@ -21,7 +21,7 @@
  *
  * Source: https://github.com/BetterDiscord/BetterDiscord
  * File: src/betterdiscord/api/contextmenu.ts
- * Commit: 539e2e69baca36d083b3447c271c815e6fe71c4a
+ * Commit: 13d89eb9a107ce64c86822f747af182c38c3b56a (v1.14.5)
  *
  * Modifications for Vencord BD Compatibility Layer:
  * Copyright (c) 2025 Pharaoh2k
@@ -30,15 +30,23 @@
  * - Wrapped in factory function for dependency injection
  */
 
+import { FluxDispatcher, Menu } from "@webpack/common";
+
 import { addLogger } from "../utils";
+
+let menuInterceptor;
+
+export function removeContextMenuInterceptor() {
+    const index = FluxDispatcher._interceptors.indexOf(menuInterceptor);
+    if (index !== -1) FluxDispatcher._interceptors.splice(index, 1);
+}
 
 /**
  * Creates the ContextMenu API.
- * Called after BdApi.Webpack and BdApi.Patcher are available.
- * @param {object} Patcher - The Patcher instance to use
+ * Called after BdApi.Webpack and BdApi.ReactUtils are available.
  * @returns {ContextMenu} Instantiated ContextMenu API
  */
-export function createContextMenu(Patcher) {
+export function createContextMenu() {
     const { Webpack } = globalThis.BdApi;
     const { Filters } = Webpack;
     const { React } = globalThis.BdApi;
@@ -116,12 +124,21 @@ export function createContextMenu(Patcher) {
                 MenuComponents.Item ??= contextMenuComponents[matchB[matchB[2] === "customitem" ? 1 : 3]];
             }
 
-            MenuComponents.Menu ??= Webpack.getModule(
-                Filters.byStrings("getContainerProps()", ".keyboardModeEnabled&&null!="),
-                { searchExports: true }
-            );
         }
+
+        MenuComponents.Menu ??= Webpack.getModule(
+            Filters.byStrings("getContainerProps()", ".keyboardModeEnabled&&null!="),
+            { searchExports: true }
+        );
     }
+
+    MenuComponents.Separator ??= Menu.MenuSeparator;
+    MenuComponents.CheckboxItem ??= Menu.MenuCheckboxItem;
+    MenuComponents.RadioItem ??= Menu.MenuRadioItem;
+    MenuComponents.ControlItem ??= Menu.MenuControlItem;
+    MenuComponents.Group ??= Menu.MenuGroup;
+    MenuComponents.Item ??= Menu.MenuItem;
+    MenuComponents.Menu ??= Menu.Menu;
 
     startupComplete = Object.values(MenuComponents).every(Boolean);
 
@@ -151,104 +168,142 @@ export function createContextMenu(Patcher) {
         return out;
     })();
 
-    function findContextMenuModule() {
-        const foundModule = Webpack.getModule(
-            m => Object.values(m).some(v => typeof v === "function" && v.toString().includes("type:\"CONTEXT_MENU_CLOSE\"")),
-            { searchExports: false }
-        );
-        const foundKey = Object.keys(foundModule).find(k => foundModule[k].length === 3);
-        return { module: foundModule, key: foundKey };
+    function globToRegExp(glob) {
+        let out = "^";
+        for (const c of glob) {
+            if (c === "*") {
+                out += ".*";
+                continue;
+            }
+            if ("\\^$+?.()|{}[]".includes(c)) out += "\\";
+            out += c;
+        }
+        return new RegExp(out + "$");
     }
 
-    function patchedRenderCallback(render, props) {
-        const res = render(props);
-        if (res?.props.navId) {
-            MenuPatcher.runPatches(res.props.navId, res, props);
-        }
-        else if (typeof res?.type === "function") {
-            MenuPatcher.patchRecursive(res, "type");
-        }
-        return res;
-    }
-
-    function contextMenuPatchCallback(_, methodArguments) {
-        const promise = methodArguments[1];
-        methodArguments[1] = async function (...args) {
-            const render = await promise.apply(this, args);
-            return props => patchedRenderCallback(render, props);
-        };
-    }
+    const nodePatcher = globalThis.BdApi.ReactUtils.createNodePatcher();
 
     // Menu patcher class for intercepting context menus
     class MenuPatcher {
         static MAX_PATCH_ITERATIONS = 10;
-        static patches = {};
-        static subPatches = new WeakMap();
+        static patches = { named: {}, regex: [] };
+
+        static handleRender(Component) {
+            const fNode = { type: Component };
+            nodePatcher.patch(fNode, (props, node, instance) => {
+                if (React.isValidElement(node)) {
+                    if (node.props.navId) {
+                        MenuPatcher.runPatches(node.props.navId, node, props, instance);
+                    }
+                    else if (node.type && typeof node.type !== "string") {
+                        MenuPatcher.patchRecursive(node);
+                    }
+                }
+                return node;
+            });
+            return fNode.type;
+        }
 
         static initialize() {
             if (!startupComplete) {
                 return Logger.warn("ContextMenu~Patcher", "Startup wasn't successful, aborting initialization.");
             }
 
-            const { module, key } = findContextMenuModule();
-
-            Patcher.before("ContextMenuPatcher", module, key, contextMenuPatchCallback);
+            menuInterceptor = event => {
+                if (event.type !== "CONTEXT_MENU_OPEN") return;
+                if (event.contextMenu.renderLazy) {
+                    const { renderLazy } = event.contextMenu;
+                    event.contextMenu.renderLazy = async () => MenuPatcher.handleRender(await renderLazy());
+                }
+                else {
+                    event.contextMenu.render = MenuPatcher.handleRender(event.contextMenu.render);
+                }
+            };
+            FluxDispatcher.addInterceptor(menuInterceptor);
         }
 
-        static patchRecursive(target, method, iteration = 0) {
+        static patchRecursive(target, iteration = 0) {
             if (iteration >= this.MAX_PATCH_ITERATIONS) return;
+            const depth = ++iteration;
 
-            const proxyFunction = this.subPatches.get(target[method]) ?? (() => {
-                const originalFunction = target[method];
-                const depth = ++iteration;
+            nodePatcher.patch(target, (props, res, instance) => {
+                if (!React.isValidElement(res)) return res;
+                const nodeProps = res.props;
 
-                function patch(...args) {
-                    const res = originalFunction.apply(this, args);
-                    if (!res) return res;
-
-                    if (res.props?.navId ?? res.props?.children?.props?.navId) {
-                        MenuPatcher.runPatches(res.props.navId ?? res.props?.children?.props?.navId, res, args[0]);
-                    }
-                    else {
-                        const layer = res.props.children ? res.props.children : res;
-                        if (typeof layer?.type === "function") {
-                            MenuPatcher.patchRecursive(layer, "type", depth);
+                if (nodeProps?.navId ?? nodeProps?.children?.props?.navId) {
+                    MenuPatcher.runPatches(nodeProps.navId ?? nodeProps.children.props.navId, res, props, instance);
+                }
+                else if (typeof nodeProps?.children === "function") {
+                    const { children } = nodeProps;
+                    res = React.cloneElement(res, {
+                        children: (...args) => {
+                            const child = children(...args);
+                            if (React.isValidElement(child)) {
+                                const cProps = child.props;
+                                const layer = typeof cProps?.children === "object" ? cProps.children : child;
+                                if (cProps?.navId ?? cProps?.children?.props?.navId) {
+                                    MenuPatcher.runPatches(cProps.navId ?? cProps.children.props.navId, child, props, instance);
+                                }
+                                else if (layer?.type && typeof layer.type !== "string") {
+                                    MenuPatcher.patchRecursive(layer, depth);
+                                }
+                            }
+                            return child;
                         }
+                    });
+                }
+                else {
+                    const layer = typeof nodeProps?.children === "object" ? nodeProps.children : res;
+                    if (layer?.type && typeof layer.type !== "string") {
+                        MenuPatcher.patchRecursive(layer, depth);
                     }
-
-                    return res;
                 }
 
-                patch._originalFunction = originalFunction;
-                Object.assign(patch, originalFunction);
-                this.subPatches.set(originalFunction, patch);
-
-                return patch;
-            })();
-
-            target[method] = proxyFunction;
+                return res;
+            });
         }
 
-        static runPatches(id, res, props) {
-            if (!this.patches[id]) return;
-
-            for (const patch of this.patches[id]) {
+        static runPatches(id, res, props, instance) {
+            const run = patch => {
                 try {
-                    patch(res, props);
+                    patch(res, props, instance);
                 }
                 catch (error) {
                     Logger.error("ContextMenu~runPatches", `Could not run ${id} patch for`, patch, error);
                 }
+            };
+            this.patches.named[id]?.forEach(run);
+            for (const element of this.patches.regex) {
+                if (element.regex.test(id)) element.patches.forEach(run);
             }
         }
 
+        static findRegexIndex(id) {
+            return this.patches.regex.findIndex(p => p.regex.flags === id.flags && p.regex.source === id.source);
+        }
+
         static patch(id, callback) {
-            this.patches[id] ??= new Set();
-            this.patches[id].add(callback);
+            if (typeof id === "string" && id.includes("*")) id = globToRegExp(id);
+            if (typeof id === "object") {
+                const index = this.findRegexIndex(id);
+                if (index !== -1) this.patches.regex[index].patches.add(callback);
+                else this.patches.regex.push({ regex: id, patches: new Set([callback]) });
+                return;
+            }
+            (this.patches.named[id] ??= new Set()).add(callback);
         }
 
         static unpatch(id, callback) {
-            this.patches[id]?.delete(callback);
+            if (typeof id === "string" && id.includes("*")) id = globToRegExp(id);
+            if (typeof id === "object") {
+                const index = this.findRegexIndex(id);
+                if (index === -1) return;
+                this.patches.regex[index].patches.delete(callback);
+                if (!this.patches.regex[index].patches.size) this.patches.regex.splice(index, 1);
+                return;
+            }
+            this.patches.named[id]?.delete(callback);
+            if (this.patches.named[id]?.size === 0) delete this.patches.named[id];
         }
     }
 
@@ -267,11 +322,15 @@ export function createContextMenu(Patcher) {
             const { type } = props;
 
             if (type === "separator") return React.createElement(MenuComponents.Separator);
+            if (type === "group") return React.createElement(MenuComponents.Group, null, this.buildMenuChildren(props.items));
 
             let Component = MenuComponents.Item;
 
             if (type === "submenu") {
-                if (!props.children) props.children = this.buildMenuChildren(props.render || props.items);
+                if (!props.children) {
+                    const children = props.render || props.items;
+                    if (children) props.children = this.buildMenuChildren(children);
+                }
             }
             else if (type === "toggle" || type === "radio") {
                 Component = type === "toggle" ? MenuComponents.CheckboxItem : MenuComponents.RadioItem;
@@ -281,10 +340,16 @@ export function createContextMenu(Patcher) {
                 Component = MenuComponents.ControlItem;
             }
 
-            if (!props.id) props.id = `${props.label.replaceAll(/(?:^[^a-z]+)|(?:[^\w-]+)/gi, "-")}`;
-            if (props.danger) props.color = "danger";
-            if (props.onClick && !props.action) props.action = props.onClick;
-            props.extended = true;
+            if (!props.id) {
+                const label = typeof props.label === "string" ? props.label : "";
+                props.id = label.replace(/^[^a-z]+|[^\w-]+/gi, "-");
+            }
+
+            if (type !== "control") {
+                if (props.danger) props.color = "danger";
+                if (props.onClick && !props.action) props.action = props.onClick;
+                props.extended = true;
+            }
 
             if (type === "toggle") {
                 // Note: React.useState works here because buildItem is called during render
@@ -292,7 +357,7 @@ export function createContextMenu(Patcher) {
                 const originalAction = props.action;
                 props.checked = active;
                 props.action = function (ev) {
-                    originalAction(ev);
+                    originalAction?.(ev);
                     if (!ev.defaultPrevented) doToggle(!active);
                 };
             }

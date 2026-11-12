@@ -29,7 +29,7 @@
  * SPDX-License-Identifier: GPL-3.0-only
  */
 import { getGlobalApi } from "../fakeBdApi";
-let stylesInjected = false;
+import { injectStyle } from "../ui/common";
 const COLOR_CSS = `
 .bd-color-picker-container{display:flex;align-items:flex-start}
 .bd-color-picker-disabled{opacity:.5;pointer-events:none}
@@ -86,27 +86,18 @@ function PipetteIcon({ color }: { color: string; }) {
 }
 export interface ColorPickerProps {
     value: string | number;
-    defaultValue?: string | number;
+    defaultColor?: string | number;
     colors?: Array<string | number>;
     disabled?: boolean;
     onChange: (hex: string) => void;
 }
 export function ColorPickerSettingComponent(props: ColorPickerProps) {
     const { React } = getGlobalApi();
-    const [value, setValue] = React.useState(toHex(props.value || "#000000"));
-    const { defaultValue, colors = DEFAULT_COLORS, disabled = false } = props;
-    React.useEffect(() => {
-        if (!stylesInjected) {
-            getGlobalApi().DOM.addStyle("bd-colorpicker-styles", COLOR_CSS);
-            stylesInjected = true;
-        }
-    }, []);
-    const handleChange = (newColor: string | number) => {
-        const hex = toHex(newColor);
-        setValue(hex);
-        props.onChange(hex);
-    };
-    const defaultHex = defaultValue ? toHex(defaultValue) : null;
+    const value = toHex(props.value || "#000000");
+    const { defaultColor, colors = DEFAULT_COLORS, disabled = false } = props;
+    injectStyle("bd-colorpicker-styles", COLOR_CSS);
+    const handleChange = (newColor: string | number) => props.onChange(toHex(newColor));
+    const defaultHex = defaultColor ? toHex(defaultColor) : null;
     const isDefault = defaultHex && toInt(value) === toInt(defaultHex);
     return React.createElement("div", { className: `bd-color-picker-container${disabled ? " bd-color-picker-disabled" : ""}` },
         React.createElement("div", { className: "bd-color-picker-controls" },

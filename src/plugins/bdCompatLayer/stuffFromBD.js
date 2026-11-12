@@ -87,33 +87,44 @@ class Patcher {
         return null;
     }
     static makeOverride(patch) {
-        return function () {
+        return function (...args) {
             let returnValue;
-            if (!patch.children || !patch.children.length) return patch.originalFunction.apply(this, arguments);
+            if (!patch.children || !patch.children.length) return patch.originalFunction.apply(this, args);
             for (const superPatch of patch.children.filter(c => c.type === "before")) {
                 try {
-                    superPatch.callback(this, arguments);
+                    superPatch.callback(this, args);
                 }
                 catch (err) {
                     Logger.err("Patcher", `Could not fire before callback of ${patch.functionName} for ${superPatch.caller}`, err);
                 }
             }
             const insteads = patch.children.filter(c => c.type === "instead");
-            if (!insteads.length) { returnValue = patch.originalFunction.apply(this, arguments); }
+            if (!insteads.length) { returnValue = patch.originalFunction.apply(this, args); }
             else {
-                for (const insteadPatch of insteads) {
-                    try {
-                        const tempReturn = insteadPatch.callback(this, arguments, patch.originalFunction.bind(this));
-                        if (typeof (tempReturn) !== "undefined") returnValue = tempReturn;
-                    }
-                    catch (err) {
-                        Logger.err("Patcher", `Could not fire instead callback of ${patch.functionName} for ${insteadPatch.caller}`, err);
-                    }
-                }
+                const outerThis = this;
+                const getPatch = i => {
+                    if (!insteads[i]) return function (...inner) {
+                        const self = this === undefined ? outerThis : this;
+                        if (returnValue === undefined) return returnValue = patch.originalFunction.apply(self, inner);
+                        return patch.originalFunction.apply(self, inner);
+                    };
+                    return function (...inner) {
+                        const self = this === undefined ? outerThis : this;
+                        try {
+                            const tempReturn = insteads[i].callback(self, inner, getPatch(i + 1));
+                            if (tempReturn !== undefined) returnValue = tempReturn;
+                        }
+                        catch (err) {
+                            Logger.err("Patcher", `Could not fire instead callback of ${patch.functionName} for ${insteads[i].caller}`, err);
+                        }
+                        return returnValue;
+                    };
+                };
+                getPatch(0).apply(this, args);
             }
             for (const slavePatch of patch.children.filter(c => c.type === "after")) {
                 try {
-                    const tempReturn = slavePatch.callback(this, arguments, returnValue);
+                    const tempReturn = slavePatch.callback(this, args, returnValue);
                     if (typeof (tempReturn) !== "undefined") returnValue = tempReturn;
                 }
                 catch (err) {
@@ -158,17 +169,20 @@ class Patcher {
         if (!module[functionName] && forcePatch) module[functionName] = function () { };
         if (!(module[functionName] instanceof Function)) return null;
         if (typeof moduleToPatch === "string") options.displayName = moduleToPatch;
-        const displayName = options.displayName || module.displayName || module.name || module.constructor.displayName || module.constructor.name;
+        const displayName = options.displayName || module.displayName || module.name || module.constructor?.displayName || module.constructor?.name || "anonymous";
         const patchId = `${displayName}.${functionName}`;
         const patch = this.patches.find(p => p.module == module && p.functionName == functionName) || this.makePatch(module, functionName, patchId);
         if (!patch.proxyFunction) this.rePatch(patch);
         const child = {
             caller,
+            pluginSource: new Error().stack?.match(/betterdiscord:\/\/plugins\/(.*?\.plugin\.js)/)?.[1] || null,
             type,
             id: patch.counter,
             callback,
             unpatch: () => {
-                patch.children.splice(patch.children.findIndex(cpatch => cpatch.id === child.id && cpatch.type === type), 1);
+                const idx = patch.children.findIndex(cpatch => cpatch.id === child.id && cpatch.type === type);
+                if (idx === -1) return;
+                patch.children.splice(idx, 1);
                 if (patch.children.length <= 0) {
                     const patchNum = this.patches.findIndex(p => p.module == module && p.functionName == functionName);
                     if (patchNum < 0) return;
@@ -181,19 +195,6 @@ class Patcher {
         patch.counter++;
         return child.unpatch;
     }
-}
-
-const TypedArray = Object.getPrototypeOf(Uint8Array);
-function shouldSkipModule(exports) {
-    if (!exports) return true;
-    if (exports.TypedArray) return true;
-    if (exports === window) return true;
-    if (exports === document.documentElement) return true;
-    if (exports[Symbol.toStringTag] === "DOMTokenList") return true;
-    if (exports === Symbol) return true;
-    if (exports instanceof Window) return true;
-    if (exports instanceof TypedArray) return true;
-    return false;
 }
 
 const IS_CLASSNAME_MODULE = /^[a-zA-Z_]\w*_[a-f0-9]+$/;
@@ -224,71 +225,6 @@ function polyfillClassNameModule(exports) {
     Object.defineProperties(exports, definers);
 }
 
-const hasThrown = new WeakSet();
-const wrapFilter = filter => (exports, module, moduleId) => {
-    try {
-        if (exports instanceof Window) return false;
-        if (exports?.default?.remove && exports?.default?.set && exports?.default?.clear && exports?.default?.get && !exports?.default?.sort) return false;
-        if (exports.remove && exports.set && exports.clear && exports.get && !exports.sort) return false;
-        if (exports?.default?.getToken || exports?.default?.getEmail || exports?.default?.showToken) return false;
-        if (exports.getToken || exports.getEmail || exports.showToken) return false;
-        return filter(exports, module, moduleId);
-    }
-    catch (err) {
-        if (!hasThrown.has(filter)) Logger.warn("WebpackModules~getModule", "Module filter threw an exception.", filter, err);
-        hasThrown.add(filter);
-        return false;
-    }
-};
-
-function getModule(filter, options = {}) {
-    const { first = true, defaultExport = true, searchExports = false, raw = false } = options;
-    const wrappedFilter = wrapFilter(filter);
-    const modules = Vencord.Webpack.cache;
-    const rm = [];
-    const indices = Object.keys(modules);
-    for (let i = 0; i < indices.length; i++) {
-        const index = indices[i];
-        if (!modules.hasOwnProperty(index)) continue;
-        let module = null;
-        try { module = modules[index]; } catch { continue; }
-        const { exports } = module;
-        if (shouldSkipModule(exports)) continue;
-        polyfillClassNameModule(exports);
-        if (typeof (exports) === "object" && searchExports && !exports.TypedArray) {
-            if (wrappedFilter(exports, module, index)) {
-                const foundModule = raw ? module : exports;
-                if (first) return foundModule;
-                rm.push(foundModule);
-            }
-            for (const key in exports) {
-                let foundModule = null;
-                let wrappedExport = null;
-                try { wrappedExport = exports[key]; } catch { continue; }
-                if (!wrappedExport) continue;
-                if (typeof wrappedExport !== "object" && typeof wrappedExport !== "function") continue;
-                if (wrappedFilter(wrappedExport, module, index)) foundModule = wrappedExport;
-                if (!foundModule) continue;
-                if (raw) foundModule = module;
-                if (first) return foundModule;
-                rm.push(foundModule);
-            }
-        }
-        else {
-            let foundModule = null;
-            if (exports.A && wrappedFilter(exports.A, module, index)) foundModule = defaultExport ? exports.A : exports;
-            if (exports.Ay && wrappedFilter(exports.Ay, module, index)) foundModule = defaultExport ? exports.Ay : exports;
-            if (exports.__esModule && exports.default && wrappedFilter(exports.default, module, index)) foundModule = defaultExport ? exports.default : exports;
-            if (wrappedFilter(exports, module, index)) foundModule = exports;
-            if (!foundModule) continue;
-            if (raw) foundModule = module;
-            if (first) return foundModule;
-            rm.push(foundModule);
-        }
-    }
-    return first || rm.length == 0 ? undefined : rm;
-}
-
 const ReactUtils_filler = {
     DiscordModules: {},
     setup(DiscordModules) {
@@ -307,10 +243,10 @@ const ReactUtils_filler = {
                 this.state = { hasError: false };
             }
             componentDidCatch() { this.setState({ hasError: true }); }
-            componentDidMount() { this.ref.current.appendChild(this.element); }
+            componentDidMount() { this.ref.current?.append(...[this.element].flat()); }
             render() { return this.state.hasError ? null : DiscordModules.React.createElement("div", { className: "react-wrapper", ref: this.ref }); }
         };
     }
 };
 
-export { getModule, monkeyPatch, Patcher, ReactUtils_filler };
+export { monkeyPatch, Patcher, polyfillClassNameModule, ReactUtils_filler };
