@@ -1,80 +1,70 @@
 name: Build and Release equibop.asar
 
 on:
-  push:
-    branches:
-      - main
-  workflow_dispatch:
+    push:
+        branches:
+            - main
+    workflow_dispatch:
 
 permissions:
-  contents: write
+    contents: write
 
 jobs:
-  build-and-release:
-    runs-on: ubuntu-latest
-    env:
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    build-and-release:
+        runs-on: ubuntu-latest
+        env:
+            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+        steps:
+            - name: Checkout
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  fetch-depth: 0
 
-      # Set up pnpm BEFORE setup-node when using cache: pnpm
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          run_install: false
+            - name: Setup PNPM
+              uses: pnpm/setup@fa36a5ef7dcdefc3a7cb25655c122e00cf6e636e # v3.1.2
+              with:
+                  runtime: node@v24
+                  require-lockfile: true
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
+            - name: Build Equicord (standalone)
+              run: pnpm buildStandalone
 
-      - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile
+            - name: List build outputs (debug)
+              run: |
+                  echo "Top-level dist contents:"
+                  ls -la dist || true
+                  echo
+                  echo "dist/equibop contents (expected):"
+                  ls -la dist/equibop || true
+                  echo
+                  echo "Full tree (depth 2):"
+                  find dist -maxdepth 2 -type f -print | sort || true
 
-      - name: Build Equicord (standalone)
-        run: pnpm buildStandalone
+            # Pack the build into equibop.asar with equibop/ at the root
+            - name: Pack equibop.asar
+              shell: bash
+              run: |
+                  set -euxo pipefail
+                  OUT_DIR="dist/equibop"
+                  test -f "$OUT_DIR/main.js" || (echo "main.js not found in $OUT_DIR" && exit 1)
 
-      - name: List build outputs (debug)
-        run: |
-          echo "Top-level dist contents:"
-          ls -la dist || true
-          echo
-          echo "dist/equibop contents (expected):"
-          ls -la dist/equibop || true
-          echo
-          echo "Full tree (depth 2):"
-          find dist -maxdepth 2 -type f -print | sort || true
+                  mkdir -p packroot/equibop
+                  cp -r "$OUT_DIR"/. packroot/equibop/
 
-      # Pack the build into equibop.asar with equibop/ at the root
-      - name: Pack equibop.asar
-        shell: bash
-        run: |
-          set -euxo pipefail
-          OUT_DIR="dist/equibop"
-          test -f "$OUT_DIR/main.js" || (echo "main.js not found in $OUT_DIR" && exit 1)
+                  npx asar pack packroot equibop.asar
+                  # sanity check (should list equibop/main.js)
+                  npx asar list equibop.asar | head
 
-          mkdir -p packroot/equibop
-          cp -r "$OUT_DIR"/. packroot/equibop/
+            # Seed a non-prerelease "latest" if none exists (so next step can clobber)
+            - name: Seed latest release if missing
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  if ! gh release view latest >/dev/null 2>&1; then
+                    gh release create v0.0.1 --title "v0.0.1" --notes "Initial seed release" --latest
+                  fi
 
-          npx asar pack packroot equibop.asar
-          # sanity check (should list equibop/main.js)
-          npx asar list equibop.asar | head
-
-      # Seed a non-prerelease "latest" if none exists (so next step can clobber)
-      - name: Seed latest release if missing
-        shell: bash
-        run: |
-          set -euo pipefail
-          if ! gh release view latest >/dev/null 2>&1; then
-            gh release create v0.0.1 --title "v0.0.1" --notes "Initial seed release" --latest
-          fi
-
-      # Upload to the latest release (mirrors upstream's 'gh release upload latest --clobber')
-      - name: Upload equibop.asar to latest
-        run: gh release upload latest --clobber equibop.asar
+            # Upload to the latest release (mirrors upstream's 'gh release upload latest --clobber')
+            - name: Upload equibop.asar to latest
+              run: gh release upload latest --clobber equibop.asar

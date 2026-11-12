@@ -1,128 +1,123 @@
 name: Daily Release (Scheduled)
 
 on:
-  schedule:
-    # Run daily at 01:00 UTC
-    - cron: '0 1 * * *'
-  workflow_dispatch: # Allow manual trigger
+    schedule:
+        # Run daily at 01:00 UTC
+        - cron: "0 1 * * *"
+    workflow_dispatch: # Allow manual trigger
 
 env:
-  FORCE_COLOR: true
+    FORCE_COLOR: true
 
 permissions:
-  contents: write
+    contents: write
 
 concurrency:
-  group: daily-release-latest
-  cancel-in-progress: false
+    group: daily-release-latest
+    cancel-in-progress: false
 
 jobs:
-  build-and-release:
-    name: Build and Release
-    runs-on: ubuntu-latest
-    # Make tokens available to all steps (gh expects GH_TOKEN)
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      ETOKEN: ${{ secrets.ETOKEN }}
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - uses: pnpm/action-setup@v6 # Install pnpm using packageManager key in package.json
-
-      - name: Use Node.js 24
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: "pnpm"
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build web
-        run: pnpm buildWebStandalone
-
-      - name: Build
-        run: pnpm buildStandalone
-
-      - name: Generate plugin lists
-        run: |
-          pnpm generatePluginJson dist/plugins.json
-          pnpm generateEquicordPluginJson dist/equicordplugins.json
-          pnpm generateVencordPluginJson dist/vencordplugins.json
-          pnpm generateDevsList dist/devs.json
-
-      - name: Collect files to be released
-        shell: bash
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-
-          cd dist
-          mkdir -p release
-
-          cp browser/browser.* release || true
-          cp Vencord.user.{js,js.LEGAL.txt} release || true
-
-          # copy the plugin data jsons, the extension zips and the desktop/vesktop asars
-          for f in *.{json,zip,asar}; do cp "$f" release/; done || true
-
-          # legacy un-asared files
-          for f in desktop/*; do [ -f "$f" ] && cp "$f" release/ || true; done
-          for file in equibop/*; do
-            filename=$(basename "$file")
-            cp "$file" "release/equibop${filename^}"
-          done || true
-
-          find release -type f -size 0 -delete || true
-          rm -f release/package.json
-          rm -f release/*.map
-
-      - name: Create or update 'latest' release
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd dist/release
-
-          if gh release view latest -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Updating existing 'latest' release"
-            gh release edit latest -R "$GITHUB_REPOSITORY" --prerelease=false --latest
-            gh release upload latest --clobber -R "$GITHUB_REPOSITORY" ./*
-          else
-            echo "Creating new 'latest' release"
-            gh release create latest \
-              --title "Latest Development Build" \
-              --notes "Automated daily build from the latest commit.
-
-          Build Date: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
-          Commit: ${{ github.sha }}" \
-              -R "$GITHUB_REPOSITORY" \
-              --latest \
-              --target "$GITHUB_SHA" \
-              ./*
-          fi
-
-      - name: Push plugin JSONs to Equibored repo (optional)
-        if: ${{ env.ETOKEN != '' }}
+    build-and-release:
+        name: Build and Release
+        runs-on: ubuntu-latest
+        # Make tokens available to all steps (gh expects GH_TOKEN)
         env:
-          REPO: Equicord/Equibored
-        shell: bash
-        run: |
-          set -euo pipefail
+            GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            ETOKEN: ${{ secrets.ETOKEN }}
 
-          git config --global user.name "GitHub-Actions"
-          git config --global user.email actions@github.com
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  fetch-depth: 0
 
-          git clone "https://${ETOKEN}@github.com/${REPO}.git" plugins
-          cp dist/release/*plugins.json plugins/ || true
+            - name: Setup PNPM
+              uses: pnpm/setup@fa36a5ef7dcdefc3a7cb25655c122e00cf6e636e # v3.1.2
+              with:
+                  runtime: node@v24
+                  require-lockfile: true
 
-          cd plugins
-          if git status --porcelain | grep -q .; then
-            git add -A
-            git commit -m "Plugins for https://github.com/$GITHUB_REPOSITORY/commit/$GITHUB_SHA"
-            git push
-          else
-            echo "No plugin JSON changes; skipping push."
-          fi
+            - name: Build web
+              run: pnpm buildWebStandalone
+
+            - name: Build
+              run: pnpm buildStandalone
+
+            - name: Generate plugin lists
+              run: |
+                  pnpm generatePluginJson dist/plugins.json
+                  pnpm generateEquicordPluginJson dist/equicordplugins.json
+                  pnpm generateVencordPluginJson dist/vencordplugins.json
+                  pnpm generateDevsList dist/devs.json
+
+            - name: Collect files to be released
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  shopt -s nullglob
+
+                  cd dist
+                  mkdir -p release
+
+                  cp browser/browser.* release || true
+                  cp Equicord.user.{js,js.LEGAL.txt} release || true
+
+                  # copy the plugin data jsons, the extension zips and the desktop/vesktop asars
+                  for f in *.{json,zip,asar}; do cp "$f" release/; done || true
+
+                  # legacy un-asared files
+                  for f in desktop/*; do [ -f "$f" ] && cp "$f" release/ || true; done
+                  for file in equibop/*; do
+                    filename=$(basename "$file")
+                    cp "$file" "release/equibop${filename^}"
+                  done || true
+
+                  find release -type f -size 0 -delete || true
+                  rm -f release/package.json
+                  rm -f release/*.map
+
+            - name: Create or update 'latest' release
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  cd dist/release
+
+                  if gh release view latest -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+                    echo "Updating existing 'latest' release"
+                    gh release edit latest -R "$GITHUB_REPOSITORY" --prerelease=false --latest
+                    gh release upload latest --clobber -R "$GITHUB_REPOSITORY" ./*
+                  else
+                    echo "Creating new 'latest' release"
+                    gh release create latest \
+                      --title "Latest Development Build" \
+                      --notes "Automated daily build from the latest commit.
+
+                  Build Date: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
+                  Commit: ${{ github.sha }}" \
+                      -R "$GITHUB_REPOSITORY" \
+                      --latest \
+                      --target "$GITHUB_SHA" \
+                      ./*
+                  fi
+
+            - name: Push plugin JSONs to Equibored repo (optional)
+              if: ${{ env.ETOKEN != '' }}
+              env:
+                  REPO: Equicord/Equibored
+              shell: bash
+              run: |
+                  set -euo pipefail
+
+                  git config --global user.name "GitHub-Actions"
+                  git config --global user.email actions@github.com
+
+                  git clone "https://${ETOKEN}@github.com/${REPO}.git" plugins
+                  cp dist/release/*plugins.json plugins/ || true
+
+                  cd plugins
+                  if git status --porcelain | grep -q .; then
+                    git add -A
+                    git commit -m "Plugins for https://github.com/$GITHUB_REPOSITORY/commit/$GITHUB_SHA"
+                    git push
+                  else
+                    echo "No plugin JSON changes; skipping push."
+                  fi

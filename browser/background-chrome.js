@@ -1,3 +1,5 @@
+importScripts("service-worker.js");
+
 // BD Compat Layer: Handle CORS-free fetch requests for Discord CDN
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.type === "EQUICORD_CORS_FETCH") {
