@@ -42,6 +42,7 @@ const hljs: {
     highlightAuto(code: string): { value: string; };
 } = findByPropsLazy("highlight", "registerLanguage");
 
+import { getMonacoBase } from "./bdVendor";
 import { PLUGIN_NAME } from "./constants";
 import { getGlobalApi } from "./fakeBdApi";
 import { addCustomPlugin, convertPlugin } from "./pluginConstructor";
@@ -2112,8 +2113,8 @@ function openAlertModal(title: string, body: string) {
     ));
 }
 /** ---------- Monaco / Highlight helpers ---------- */
-// Same approach as BetterDiscord's editor: Monaco's AMD build from a CDN, so every language and worker shares one module graph
-const MONACO_BASE = "https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min";
+// Same approach as BetterDiscord's editor: Monaco's AMD build, so every language and worker shares one module graph.
+// The browser extension ships its own copy; other builds load it from a CDN (see bdVendor.ts)
 let monacoPromise: Promise<any> | undefined;
 function ensureMonaco(): Promise<any> {
     return monacoPromise ??= loadMonaco().catch(err => {
@@ -2123,12 +2124,13 @@ function ensureMonaco(): Promise<any> {
     });
 }
 async function loadMonaco() {
+    const base = await getMonacoBase();
     (globalThis as any).MonacoEnvironment ??= {
         getWorker: (_: string, label: string) => new Worker(URL.createObjectURL(new Blob([
-            `self.MonacoEnvironment={baseUrl:"${MONACO_BASE}/"};importScripts("${MONACO_BASE}/vs/base/worker/workerMain.js");`
+            `self.MonacoEnvironment={baseUrl:"${base}/"};importScripts("${base}/vs/base/worker/workerMain.js");`
         ], { type: "text/javascript" })), { name: label })
     };
-    injectCssOnce("monaco-editor-css", `${MONACO_BASE}/vs/editor/editor.main.css`);
+    injectCssOnce("monaco-editor-css", `${base}/vs/editor/editor.main.css`);
 
     const win = window as any;
     const commonjsRequire = win.require;
@@ -2138,14 +2140,14 @@ async function loadMonaco() {
     try {
         await new Promise<void>((resolve, reject) => {
             const script = document.createElement("script");
-            script.src = `${MONACO_BASE}/vs/loader.js`;
+            script.src = `${base}/vs/loader.js`;
             script.onload = () => resolve();
             script.onerror = () => reject(new Error("Failed to load Monaco's AMD loader"));
             document.head.append(script);
         });
         const amdRequire = win.require;
         win.require = commonjsRequire;
-        amdRequire.config({ paths: { vs: `${MONACO_BASE}/vs` } });
+        amdRequire.config({ paths: { vs: `${base}/vs` } });
         const monaco = await new Promise<any>((resolve, reject) => amdRequire(["vs/editor/editor.main"], resolve, reject));
         // Monaco's lazy chunks call define() directly; hiding the AMD marker keeps UMD scripts loaded later on their global path
         delete win.define.amd;

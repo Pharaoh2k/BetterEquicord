@@ -24,6 +24,7 @@ import { appendFile, mkdir, readdir, readFile, rm, writeFile } from "fs/promises
 import { join, relative } from "path";
 import Zip from "zip-local";
 
+import { loadBdVendorFiles } from "./bdVendor.mjs";
 import { BUILD_TIMESTAMP, buildOrWatchAll, commonOpts, commonRendererPlugins, globPlugins, IS_ANTI_CRASH_TEST, IS_COMPANION_TEST, IS_DEV, IS_REPORTER, IS_STANDALONE, stringifyValues, VERSION } from "./common.mjs";
 
 /**
@@ -128,6 +129,7 @@ async function buildExtension(target, files) {
         "dist/Equicord.js": await readFile("dist/browser/extension.js"),
         "dist/Equicord.css": await readFile("dist/browser/extension.css"),
         ...await loadDir("node_modules/@vencord/monaco-editor/dist", "vendor/monaco"),
+        ...await loadBdVendorFiles(),
         ...Object.fromEntries(await Promise.all(files.map(async f => {
             let content = await readFile(join("browser", f));
             if (f.startsWith("manifest")) {

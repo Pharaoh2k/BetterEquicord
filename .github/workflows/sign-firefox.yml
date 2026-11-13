@@ -1,0 +1,133 @@
+name: Sign Firefox Extension
+
+# Signs the Firefox extension through addons.mozilla.org as a self-distributed ("unlisted") add-on
+# and attaches it to the 'latest' release, together with the update manifest Firefox polls for
+# automatic updates. Needs the AMO_JWT_ISSUER and AMO_JWT_SECRET repository secrets (an API key
+# from https://addons.mozilla.org/developers/addon/api/key/); without them the job is skipped.
+
+on:
+    push:
+        branches:
+            - main
+        paths:
+            - "src/**"
+            - "browser/**"
+            - "scripts/build/**"
+            - "package.json"
+            - "pnpm-lock.yaml"
+            - ".github/workflows/sign-firefox.yml"
+    workflow_dispatch:
+
+permissions:
+    contents: write
+
+concurrency:
+    group: sign-firefox
+    cancel-in-progress: false
+
+env:
+    FORCE_COLOR: true
+    XPI_NAME: BetterEquicord-firefox.xpi
+    UPDATES_NAME: firefox-updates.json
+
+jobs:
+    sign:
+        name: Sign and Release
+        runs-on: ubuntu-latest
+        timeout-minutes: 50
+        env:
+            GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            WEB_EXT_API_KEY: ${{ secrets.AMO_JWT_ISSUER }}
+            WEB_EXT_API_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+
+        steps:
+            - name: Check for Mozilla API credentials
+              id: creds
+              run: |
+                  if [ -n "$WEB_EXT_API_KEY" ] && [ -n "$WEB_EXT_API_SECRET" ]; then
+                    echo "ok=true" >> "$GITHUB_OUTPUT"
+                  else
+                    echo "::notice::AMO_JWT_ISSUER and AMO_JWT_SECRET are not set, skipping Firefox signing"
+                    echo "ok=false" >> "$GITHUB_OUTPUT"
+                  fi
+
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              if: steps.creds.outputs.ok == 'true'
+
+            - name: Setup PNPM
+              if: steps.creds.outputs.ok == 'true'
+              uses: pnpm/setup@fa36a5ef7dcdefc3a7cb25655c122e00cf6e636e # v3.1.2
+              with:
+                  runtime: node@v24
+                  require-lockfile: true
+
+            - name: Build web
+              if: steps.creds.outputs.ok == 'true'
+              run: pnpm buildWebStandalone
+
+            # Every signed upload needs a new, higher version. The fourth part becomes a UTC timestamp
+            # (yy + day of year + hhmm, 9 digits, AMO's per-part limit), which only ever increases.
+            - name: Set version and update URL
+              if: steps.creds.outputs.ok == 'true'
+              id: version
+              run: |
+                  base=$(node -p "require('./package.json').version.split('.').slice(0, 3).join('.')")
+                  version="$base.$(date -u +%y%j%H%M)"
+                  echo "version=$version" >> "$GITHUB_OUTPUT"
+                  EXT_VERSION="$version" \
+                  UPDATE_URL="https://github.com/$GITHUB_REPOSITORY/releases/download/latest/$UPDATES_NAME" \
+                  node -e '
+                    const fs = require("fs");
+                    const file = "dist/browser/firefox-unpacked/manifest.json";
+                    const manifest = JSON.parse(fs.readFileSync(file, "utf8"));
+                    manifest.version = process.env.EXT_VERSION;
+                    manifest.browser_specific_settings.gecko.update_url = process.env.UPDATE_URL;
+                    fs.writeFileSync(file, JSON.stringify(manifest, null, 4));
+                  '
+                  echo "Signing version $version"
+
+            # Mozilla may ask for the code before bundling; this is the exact commit that was built
+            - name: Archive source code
+              if: steps.creds.outputs.ok == 'true'
+              run: git archive --format=zip -o dist/extension-sources.zip HEAD
+
+            - name: Sign with addons.mozilla.org
+              if: steps.creds.outputs.ok == 'true'
+              run: >
+                  pnpm dlx web-ext@10.8.0 sign
+                  --channel unlisted
+                  --source-dir dist/browser/firefox-unpacked
+                  --artifacts-dir dist/web-ext-artifacts
+                  --upload-source-code dist/extension-sources.zip
+                  --approval-timeout 1800000
+
+            - name: Write update manifest
+              if: steps.creds.outputs.ok == 'true'
+              env:
+                  EXT_VERSION: ${{ steps.version.outputs.version }}
+              run: |
+                  xpi=$(find dist/web-ext-artifacts -name '*.xpi' | head -n 1)
+                  test -n "$xpi" || { echo "web-ext did not produce a signed .xpi"; exit 1; }
+                  mkdir -p dist/firefox-release
+                  cp "$xpi" "dist/firefox-release/$XPI_NAME"
+
+                  EXT_ID=$(node -p "require('./dist/browser/firefox-unpacked/manifest.json').browser_specific_settings.gecko.id") \
+                  XPI_HASH="sha256:$(sha256sum "dist/firefox-release/$XPI_NAME" | cut -d' ' -f1)" \
+                  XPI_URL="https://github.com/$GITHUB_REPOSITORY/releases/download/latest/$XPI_NAME" \
+                  node -e '
+                    const { EXT_ID, EXT_VERSION, XPI_HASH, XPI_URL, UPDATES_NAME } = process.env;
+                    const updates = { addons: { [EXT_ID]: { updates: [{ version: EXT_VERSION, update_link: XPI_URL, update_hash: XPI_HASH }] } } };
+                    require("fs").writeFileSync(`dist/firefox-release/${UPDATES_NAME}`, JSON.stringify(updates, null, 4));
+                  '
+                  cat "dist/firefox-release/$UPDATES_NAME"
+
+            # The .xpi goes up first, so the update manifest never points at a file that isn't there yet
+            - name: Upload to the 'latest' release
+              if: steps.creds.outputs.ok == 'true'
+              run: |
+                  if ! gh release view latest -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+                    gh release create latest -R "$GITHUB_REPOSITORY" --title "Latest Development Build" \
+                      --notes "Automated build from the latest commit." --target "$GITHUB_SHA" --latest
+                  fi
+                  gh release upload latest --clobber -R "$GITHUB_REPOSITORY" "dist/firefox-release/$XPI_NAME"
+                  gh release upload latest --clobber -R "$GITHUB_REPOSITORY" "dist/firefox-release/$UPDATES_NAME"

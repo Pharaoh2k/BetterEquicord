@@ -43,7 +43,7 @@ declare global {
 }
 import { removeContextMenuInterceptor } from "./bdModules/contextmenu";
 import { addModuleDeclarations } from "./bdModules/webpack";
-import { ZENFS_BUILD_HASH } from "./constants";
+import { loadNobleHashes, loadPathBrowserify, loadZenFs } from "./bdVendor";
 import { cleanupGlobal, createGlobalBdApi, getGlobalApi } from "./fakeBdApi";
 import { addContextMenu, addDiscordModules, FakeEventEmitter, fetchWithCorsProxyFallback, Patcher } from "./fakeStuff";
 import { injectSettingsTabs, unInjectSettingsTab } from "./fileSystemViewer";
@@ -242,14 +242,11 @@ export default definePlugin({
                      is async (Promise), which can break plugins expecting sync availability.
                    References: MDN getRandomValues(), SubtleCrypto digest(), MDN non-security hashing guidance.
                 */
-                // @ts-ignore
-                const sha2Mod: any = await import(/* webpackIgnore: true */ "https://cdn.jsdelivr.net/npm/@noble/hashes@2.0.1/sha2.js/+esm");
-                // @ts-ignore
-                const legacyMod: any = await import(/* webpackIgnore: true */ "https://cdn.jsdelivr.net/npm/@noble/hashes@2.0.1/legacy.js/+esm");
-                noble.sha256 = sha2Mod.sha256;
-                noble.sha512 = sha2Mod.sha512;
-                noble.sha1 = legacyMod.sha1;
-                noble.md5 = legacyMod.md5;
+                const hashes = await loadNobleHashes();
+                noble.sha256 = hashes.sha256;
+                noble.sha512 = hashes.sha512;
+                noble.sha1 = hashes.sha1;
+                noble.md5 = hashes.md5;
                 nobleReady = true;
                 compat_logger.info("Crypto algorithms loaded (md5, sha1, sha256, sha512)");
             } catch (err) {
@@ -278,16 +275,8 @@ export default definePlugin({
             });
         }
         else {
-            fetch(
-                proxyUrl +
-                `https://cdn.jsdelivr.net/gh/LosersUnited/ZenFS-builds@${ZENFS_BUILD_HASH}/bin/bundle.js` // TODO: Add option to change this
-            )
-                .then(out => out.text())
-                .then(out2 => {
-                    out2 = "'use strict';\n" + out2;
-                    out2 += "\n//# sourceURL=betterDiscord://internal/BrowserFs.js";
-                    const ev = new Function(out2);
-                    ev.call({});
+            loadZenFs(proxyUrl)
+                .then(() => {
                     const zen = globalThis.ZenFS_Aquire();
                     const ZenFs = zen.zenfs;
                     const ZenFsDom = zen.zenfs_dom;
@@ -316,15 +305,14 @@ export default definePlugin({
                         async () => {
                             if (target.client && target.client instanceof zen.RealFSClient) await target.client.ready;
                             ReImplementationObject.fs = wrapFsWithRealFsSupport(ZenFs.fs);
-                            const path = await (await fetch("https://cdn.jsdelivr.net/npm/path-browserify@1.0.1/index.js")).text();
-                            const result = eval.call(window, "(()=>{const module = {};" + path + "return module.exports;})();\n//# sourceURL=betterDiscord://internal/path.js");
-                            ReImplementationObject.path = result;
+                            ReImplementationObject.path = await loadPathBrowserify();
                             if (!Settings.plugins["BD Compatibility Layer"]?.safeMode)
                                 // @ts-ignore
                                 windowBdCompatLayer.fsReadyPromise.resolve();
                         }
                     );
-                });
+                })
+                .catch(err => compat_logger.error("Failed to load the virtual file system (ZenFS):", err));
         }
         const windowBdCompatLayer = {
             FSUtils,

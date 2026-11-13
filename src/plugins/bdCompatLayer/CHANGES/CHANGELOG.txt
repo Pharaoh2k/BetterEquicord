@@ -120,3 +120,11 @@
 - Components: Button/Text statics, stable ErrorBoundary/Flex, rebuilt inputs on BD's value/defaultValue contract, new ColorInput/NumberInput/SliderInput/SearchInput/Checkbox/Modal
 - Hooks/ReactUtils: BD useStateFromStores, wrapInHooks covers use/readContext/useActionState/useOptimistic, getOwnerInstance and wrapElement parity
 - fileSystemViewer.tsx: Monaco loads from jsDelivr (monaco-editor 0.57.0 +esm) since upstream dropped the monaco-editor dependency
+
+*** 2026-11-13: Browser extension bundles its libraries, Firefox signing (Pharaoh2k)
+- The browser extension no longer runs code from a CDN: Monaco 0.52.2, @noble/hashes 2.0.1, path-browserify 1.0.1 and the ZenFS build ship inside the extension (vendor/bd), as Mozilla's add-on policy requires
+- New bdVendor.ts picks the bundled copy in the extension and the pinned jsDelivr URL elsewhere; IS_EXTENSION is a build constant, so each build only contains one path
+- scripts/build/bdVendor.mjs fetches the npm packages with npm pack (pinned version and integrity, package.json and the lockfile untouched); the ZenFS build is committed at browser/vendor/zenfs/bundle.js
+- Monaco's TypeScript worker is split (lib .d.ts text moved to tsLibs.js) to stay under Mozilla's 5 MB parse limit; every editor feature is kept
+- .github/workflows/sign-firefox.yml signs the Firefox build as an unlisted add-on and publishes it with an update manifest for automatic updates
+- Correction to the 2026-11-12 entry: Monaco loads as the AMD build of monaco-editor 0.52.2, not 0.57.0 +esm
